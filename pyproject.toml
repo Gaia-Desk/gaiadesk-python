@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gaiadesk"
+version = "0.1.0"
+description = "Drive GaiaDesk desks from Python: devices, exec, shell, file copy, background jobs, stats, scoped tokens and MCP, through gaiadesk-cli."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["gaiadesk", "remote-desktop", "sdk", "exec", "mcp", "ai-agents"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: AsyncIO",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/Gaia-Desk/gaiadesk-python"
+Repository = "https://github.com/Gaia-Desk/gaiadesk-python"
+Issues = "https://github.com/Gaia-Desk/gaiadesk-python/issues"
+Changelog = "https://github.com/Gaia-Desk/gaiadesk-python/blob/main/CHANGELOG.md"
+Documentation = "https://gaiadesk.net/docs/cli-for-agents"
+Download = "https://gaiadesk.net/download"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gaiadesk = ["py.typed"]
