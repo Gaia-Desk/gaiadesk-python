@@ -2,6 +2,13 @@
 
 ## 0.1.0 (unreleased)
 
+- A native backend: with `gaiadesk-native` installed (`pip install
+  gaiadesk[native]`: GaiaDesk's client library as a prebuilt extension),
+  every method runs on it instead of spawning `gaiadesk-cli`, sync and
+  asyncio. Same results, same exceptions and kinds. `backend=` /
+  `GAIADESK_SDK_BACKEND` (`auto` | `native` | `cli`), `gd.backend`, `native=`
+  to inject a module. `raw()` and `mcp()` stay on the CLI.
+
 First version of `gaiadesk` (Python 3.9+, sync and asyncio), over
 `gaiadesk-cli`:
 

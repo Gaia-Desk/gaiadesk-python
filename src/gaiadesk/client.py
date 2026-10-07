@@ -7,6 +7,7 @@ import subprocess
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from . import _args as A
+from . import _native as N
 from ._core import Base, Completed, Plan, failure, not_found, parse_json
 from .mcp import McpClient
 from .stream import CliStream, Exit
@@ -68,9 +69,16 @@ class GaiaDesk(Base):
     * ``persist``: how long desk connections are held (seconds or ``"10m"``).
     * ``env``: the base environment (default: ``os.environ``).
     * ``cwd``: gaiadesk-cli's working directory.
+    * ``backend``: ``auto`` (default: the native library when ``gaiadesk_native``
+      is installed and no ``cli`` was given, else gaiadesk-cli), ``native`` or
+      ``cli``. Default from $GAIADESK_SDK_BACKEND. ``raw()``/``mcp()`` always use the CLI.
+    * ``native``: a module to use instead of ``import gaiadesk_native``.
     """
 
     def _run(self, plan: Plan) -> Any:
+        n = self._nat()
+        if n is not None and plan.native is not None:
+            return n.run_sync(plan.native)
         return plan.finish(self._complete(plan.args, plan.input))
 
     def _complete(self, args: Sequence[str], input: Optional[bytes]) -> Completed:
@@ -149,6 +157,10 @@ class GaiaDesk(Base):
         a = A.exec_args(desk_id, command, stdin=stdin is not None and stdin is not False, json=False,
                         shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
         data = None if stdin is None or isinstance(stdin, bool) else (stdin.encode("utf-8") if isinstance(stdin, str) else stdin)
+        n = self._nat()
+        if n is not None:
+            shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
+            return n.stream_sync("exec", N.exec_(desk_id, command, shape), data, stdin is True)  # type: ignore[return-value]
         return self._stream(a, data, keep_open=stdin is True)
 
     def shell(
@@ -171,6 +183,10 @@ class GaiaDesk(Base):
                      timeout: Optional[A.Duration] = None, connect_timeout: Optional[A.Duration] = None) -> CliStream:
         """``shell`` (no --json), streaming. Without ``script``, stdin stays open: ``write()`` lines, then ``end()``."""
         a = A.shell_args(desk_id, json=False, shell=shell, timeout=timeout, connect_timeout=connect_timeout)
+        n = self._nat()
+        if n is not None:
+            na = N.shell_stream(desk_id, dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout))
+            return n.stream_sync("shell", na, script.encode("utf-8") if script is not None else None, script is None)  # type: ignore[return-value]
         return self._stream(a, script.encode("utf-8") if script is not None else None, keep_open=script is None)
 
     # cp
@@ -188,33 +204,37 @@ class GaiaDesk(Base):
     def run_job(self, desk_id: str, name: str, command: A.Command, *, priority: Optional[str] = None,
                 cpu: Optional[int] = None, mem: Union[None, int, str] = None, keep_awake: Optional[bool] = None) -> JobInfo:
         """``run --detach --json``: a named background job that outlives this connection."""
-        return self._run(self._p_op(A.run_args(desk_id, name, command, priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake)))
+        return self._run(self._p_run_job(desk_id, name, command, dict(priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake)))
 
     def jobs(self, desk_id: str) -> List[JobInfo]:
         """``ps --json``."""
-        return self._run(self._p_op(A.ps_args(desk_id)))
+        return self._run(self._p_jobs(desk_id))
 
     def kill_job(self, desk_id: str, name: str) -> JobInfo:
         """``kill --json``: stop a job and everything it started."""
-        return self._run(self._p_op(A.kill_args(desk_id, name)))
+        return self._run(self._p_kill_job(desk_id, name))
 
     def job_logs(self, desk_id: str, name: str, *, tail: Optional[int] = None) -> str:
         """``logs <job>`` (no --json exists): its output so far, stdout and stderr together."""
-        return self._run(self._p_text(A.logs_args(desk_id, name, tail)))
+        return self._run(self._p_job_logs(desk_id, name, tail))
 
     def follow_job_logs(self, desk_id: str, name: str, *, tail: Optional[int] = None) -> CliStream:
         """``logs -f <job>``: follow until the job ends; ``kill()`` stops following (not the job)."""
-        return self._stream(A.logs_args(desk_id, name, tail, follow=True))
+        a = A.logs_args(desk_id, name, tail, follow=True)
+        n = self._nat()
+        if n is not None:
+            return n.stream_sync("job_follow", N.logs(desk_id, name, tail), None, False)  # type: ignore[return-value]
+        return self._stream(a)
 
     # stats / measure
 
     def stats(self, desk_id: str) -> DeskStats:
         """``stats --json``."""
-        return self._run(self._p_op(A.stats_args(desk_id)))
+        return self._run(self._p_stats(desk_id))
 
     def measure(self, desk_id: str, *, count: Optional[int] = None) -> MeasureResult:
         """``measure --json``. ``rtt_ms`` is None if no ping came back (CLI exit 1)."""
-        return self._run(self._p_op(A.measure_args(desk_id, count), (0, 1)))
+        return self._run(self._p_measure(desk_id, count))
 
     # tokens / audit
 
@@ -222,25 +242,25 @@ class GaiaDesk(Base):
                      scopes: Optional[Sequence[str]] = None, cwd: Optional[str] = None, low_priv: bool = False,
                      out: Optional[str] = None) -> TokenCreateResult:
         """``token create --json`` (owner: needs ``code`` = the unattended password). Without ``out`` each entry has the ``secret``."""
-        return self._run(self._p_op(A.token_create_args(desks, name=name, expires=expires, scopes=scopes, cwd=cwd, low_priv=low_priv, out=out)))
+        return self._run(self._p_create_token(desks, dict(name=name, expires=expires, scopes=scopes, cwd=cwd, low_priv=low_priv, out=out)))
 
     def list_tokens(self, desk_id: str) -> List[TokenInfo]:
         """``token list --json`` (owner only)."""
-        return self._run(self._p_op(A.token_list_args(desk_id)))
+        return self._run(self._p_list_tokens(desk_id))
 
     def revoke_token(self, desk_id: str, name: Optional[str] = None, *, all_for_desk: bool = False, account: bool = False) -> Dict[str, Any]:
         """``token revoke --json``: ``{revoked, stopped_sessions}``; with ``account=True`` ``{desk, ok, message}``."""
-        return self._run(self._p_op(A.token_revoke_args(desk_id, name, all_for_desk, account)))
+        return self._run(self._p_revoke_token(desk_id, name, all_for_desk, account))
 
     def audit(self, desk_id: str, *, token: Optional[str] = None, limit: Optional[int] = None, account: bool = False) -> List[AuditEvent]:
         """``audit --json``: what agent tokens did on the desk, newest first."""
-        return self._run(self._p_op(A.audit_args(desk_id, token, limit, account)))
+        return self._run(self._p_audit(desk_id, token, limit, account))
 
     # mesh / connections
 
     def mesh_status(self) -> MeshStatus:
         """``mesh status --json``."""
-        return self._run(self._p_op(["mesh", "status", "--json"]))
+        return self._run(self._p_mesh_status())
 
     def mesh_ip(self, desk_id: str) -> str:
         """``mesh ip <desk>`` (plain text)."""
@@ -248,7 +268,7 @@ class GaiaDesk(Base):
 
     def disconnect(self, desk_id: Optional[str] = None) -> None:
         """Close the held connection to one desk, or all of them."""
-        self._run(self._p_none(A.disconnect_args(desk_id)))
+        self._run(self._p_disconnect(desk_id))
 
     # forward
 
@@ -257,6 +277,9 @@ class GaiaDesk(Base):
         Returns once every forward is listening. Use as a context manager to stop it."""
         lst = [specs] if isinstance(specs, dict) else list(specs)
         a = A.forward_args(desk_id, lst)
+        n = self._nat()
+        if n is not None:
+            return n.forward_sync(N.forward(desk_id, lst))  # type: ignore[return-value]
         s = self._stream(a)
         listening: List[ForwardListening] = []
         buf = ""
@@ -280,7 +303,11 @@ class GaiaDesk(Base):
 
     def agent_connect(self, desk_id: str) -> str:
         """``agent-connect``: prove an agent token opens a screen session (needs ``agent_token``)."""
-        return self._run(self._p_text(A.agent_connect_args(desk_id, self.server), strip=True))
+        a = A.agent_connect_args(desk_id, self.server)
+        n = self._nat()
+        if n is not None:
+            return n.agent_connect_sync(A.check_desk(desk_id))
+        return self._run(self._p_text(a, strip=True))
 
     def mcp(self, *, audit_dir: Optional[str] = None, allow_domains: Sequence[str] = ()) -> McpClient:
         """Start ``gaiadesk-cli mcp`` (stdio): the way to the screen tools from code."""

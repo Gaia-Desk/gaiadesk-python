@@ -1,4 +1,6 @@
-"""gaiadesk: drive GaiaDesk desks from Python through gaiadesk-cli.
+"""gaiadesk: drive GaiaDesk desks from Python, through GaiaDesk's native
+library when it is installed (``pip install gaiadesk[native]``), else through
+gaiadesk-cli. ``GaiaDesk(...).backend`` says which.
 
     from gaiadesk import GaiaDesk
     gd = GaiaDesk(token_file="~/.config/gaiadesk/bot.token")

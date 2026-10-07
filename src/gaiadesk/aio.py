@@ -6,6 +6,7 @@ import asyncio
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from . import _args as A
+from . import _native as N
 from ._core import Base, Completed, Plan, failure, not_found, parse_json
 from .mcp import AsyncMcpClient
 from .stream import AsyncCliStream, Exit
@@ -51,6 +52,9 @@ class AsyncGaiaDesk(Base):
     (``exec_stream`` & co. return an ``AsyncCliStream``)."""
 
     async def _run(self, plan: Plan) -> Any:
+        n = self._nat()
+        if n is not None and plan.native is not None:
+            return await n.run_async(plan.native)
         return plan.finish(await self._complete(plan.args, plan.input))
 
     async def _complete(self, args: Sequence[str], input: Optional[bytes]) -> Completed:
@@ -100,6 +104,10 @@ class AsyncGaiaDesk(Base):
         a = A.exec_args(desk_id, command, stdin=stdin is not None and stdin is not False, json=False,
                         shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
         data = None if stdin is None or isinstance(stdin, bool) else (stdin.encode("utf-8") if isinstance(stdin, str) else stdin)
+        n = self._nat()
+        if n is not None:
+            shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
+            return await n.stream_async("exec", N.exec_(desk_id, command, shape), data, stdin is True)  # type: ignore[return-value]
         return await self._stream(a, data, keep_open=stdin is True)
 
     async def shell(self, desk_id: str, script: str, *, check: bool = False, shell: Optional[str] = None,
@@ -111,6 +119,10 @@ class AsyncGaiaDesk(Base):
     async def shell_stream(self, desk_id: str, script: Optional[str] = None, *, shell: Optional[str] = None,
                            timeout: Optional[A.Duration] = None, connect_timeout: Optional[A.Duration] = None) -> AsyncCliStream:
         a = A.shell_args(desk_id, json=False, shell=shell, timeout=timeout, connect_timeout=connect_timeout)
+        n = self._nat()
+        if n is not None:
+            na = N.shell_stream(desk_id, dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout))
+            return await n.stream_async("shell", na, script.encode("utf-8") if script is not None else None, script is None)  # type: ignore[return-value]
         return await self._stream(a, script.encode("utf-8") if script is not None else None, keep_open=script is None)
 
     async def upload(self, local: str, desk_id: str, remote: str, *, recursive: bool = False) -> CpSummary:
@@ -121,54 +133,61 @@ class AsyncGaiaDesk(Base):
 
     async def run_job(self, desk_id: str, name: str, command: A.Command, *, priority: Optional[str] = None,
                       cpu: Optional[int] = None, mem: Union[None, int, str] = None, keep_awake: Optional[bool] = None) -> JobInfo:
-        return await self._run(self._p_op(A.run_args(desk_id, name, command, priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake)))
+        return await self._run(self._p_run_job(desk_id, name, command, dict(priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake)))
 
     async def jobs(self, desk_id: str) -> List[JobInfo]:
-        return await self._run(self._p_op(A.ps_args(desk_id)))
+        return await self._run(self._p_jobs(desk_id))
 
     async def kill_job(self, desk_id: str, name: str) -> JobInfo:
-        return await self._run(self._p_op(A.kill_args(desk_id, name)))
+        return await self._run(self._p_kill_job(desk_id, name))
 
     async def job_logs(self, desk_id: str, name: str, *, tail: Optional[int] = None) -> str:
-        return await self._run(self._p_text(A.logs_args(desk_id, name, tail)))
+        return await self._run(self._p_job_logs(desk_id, name, tail))
 
     async def follow_job_logs(self, desk_id: str, name: str, *, tail: Optional[int] = None) -> AsyncCliStream:
-        return await self._stream(A.logs_args(desk_id, name, tail, follow=True))
+        a = A.logs_args(desk_id, name, tail, follow=True)
+        n = self._nat()
+        if n is not None:
+            return await n.stream_async("job_follow", N.logs(desk_id, name, tail), None, False)  # type: ignore[return-value]
+        return await self._stream(a)
 
     async def stats(self, desk_id: str) -> DeskStats:
-        return await self._run(self._p_op(A.stats_args(desk_id)))
+        return await self._run(self._p_stats(desk_id))
 
     async def measure(self, desk_id: str, *, count: Optional[int] = None) -> MeasureResult:
-        return await self._run(self._p_op(A.measure_args(desk_id, count), (0, 1)))
+        return await self._run(self._p_measure(desk_id, count))
 
     async def create_token(self, desks: Union[str, Sequence[str]], *, name: Optional[str] = None, expires: Optional[str] = None,
                            scopes: Optional[Sequence[str]] = None, cwd: Optional[str] = None, low_priv: bool = False,
                            out: Optional[str] = None) -> TokenCreateResult:
-        return await self._run(self._p_op(A.token_create_args(desks, name=name, expires=expires, scopes=scopes, cwd=cwd, low_priv=low_priv, out=out)))
+        return await self._run(self._p_create_token(desks, dict(name=name, expires=expires, scopes=scopes, cwd=cwd, low_priv=low_priv, out=out)))
 
     async def list_tokens(self, desk_id: str) -> List[TokenInfo]:
-        return await self._run(self._p_op(A.token_list_args(desk_id)))
+        return await self._run(self._p_list_tokens(desk_id))
 
     async def revoke_token(self, desk_id: str, name: Optional[str] = None, *, all_for_desk: bool = False,
                            account: bool = False) -> Dict[str, Any]:
-        return await self._run(self._p_op(A.token_revoke_args(desk_id, name, all_for_desk, account)))
+        return await self._run(self._p_revoke_token(desk_id, name, all_for_desk, account))
 
     async def audit(self, desk_id: str, *, token: Optional[str] = None, limit: Optional[int] = None,
                     account: bool = False) -> List[AuditEvent]:
-        return await self._run(self._p_op(A.audit_args(desk_id, token, limit, account)))
+        return await self._run(self._p_audit(desk_id, token, limit, account))
 
     async def mesh_status(self) -> MeshStatus:
-        return await self._run(self._p_op(["mesh", "status", "--json"]))
+        return await self._run(self._p_mesh_status())
 
     async def mesh_ip(self, desk_id: str) -> str:
         return await self._run(self._p_mesh_ip(desk_id))
 
     async def disconnect(self, desk_id: Optional[str] = None) -> None:
-        await self._run(self._p_none(A.disconnect_args(desk_id)))
+        await self._run(self._p_disconnect(desk_id))
 
     async def forward(self, desk_id: str, specs: Union[Dict[str, Any], Sequence[Dict[str, Any]]]) -> AsyncForward:
         lst = [specs] if isinstance(specs, dict) else list(specs)
         a = A.forward_args(desk_id, lst)
+        n = self._nat()
+        if n is not None:
+            return await n.forward_async(N.forward(desk_id, lst))  # type: ignore[return-value]
         s = await self._stream(a)
         listening: List[ForwardListening] = []
         buf = ""
@@ -189,7 +208,11 @@ class AsyncGaiaDesk(Base):
         raise failure(Completed(e.exit_code, "", stderr), a, None)
 
     async def agent_connect(self, desk_id: str) -> str:
-        return await self._run(self._p_text(A.agent_connect_args(desk_id, self.server), strip=True))
+        a = A.agent_connect_args(desk_id, self.server)
+        n = self._nat()
+        if n is not None:
+            return await n.agent_connect_async(A.check_desk(desk_id))
+        return await self._run(self._p_text(a, strip=True))
 
     async def mcp(self, *, audit_dir: Optional[str] = None, allow_domains: Sequence[str] = ()) -> AsyncMcpClient:
         return await AsyncMcpClient.start(self.cli + A.mcp_args(audit_dir, allow_domains, self.server), self.environment(), self.cwd)

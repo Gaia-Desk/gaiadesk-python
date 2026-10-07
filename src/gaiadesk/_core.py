@@ -2,8 +2,9 @@
 gaiadesk-cli, and turning a finished run into a result or a typed error.
 
 Each operation is a ``Plan``: the argv, the stdin bytes, and a ``finish``
-function from the completed run to the result. ``GaiaDesk`` runs plans with
-``subprocess``; ``AsyncGaiaDesk`` with ``asyncio``.
+function from the completed run to the result, plus the same operation for
+the native backend (``_native.NativeReq``). ``GaiaDesk`` runs plans with
+``subprocess`` (or the native library); ``AsyncGaiaDesk`` with ``asyncio``.
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Union
 
 from . import _args as A
+from . import _native as N
 from .errors import (
+    CliNotFoundError,
     CommandError,
     GaiaDeskError,
     ProtocolError,
@@ -42,6 +45,7 @@ class Plan(NamedTuple):
     args: List[str]
     input: Optional[bytes]
     finish: Callable[[Completed], Any]
+    native: Optional[N.NativeReq] = None
 
 
 def _b(data: Union[None, str, bytes]) -> Optional[bytes]:
@@ -206,7 +210,12 @@ class Base:
         persist: Optional[A.Duration] = None,
         env: Optional[Mapping[str, str]] = None,
         cwd: Optional[str] = None,
+        backend: Optional[str] = None,
+        native: Any = None,
     ) -> None:
+        self._backend_opt = backend
+        self._native_mod = native
+        self._native: Any = False  # False: not decided yet; None: the CLI
         self._cli_opt = cli
         self._cli: Optional[List[str]] = None
         self.token_file = token_file
@@ -253,35 +262,105 @@ class Base:
             env["GAIADESK_PERSIST"] = A.duration(self.persist, "persist")
         return env
 
+    # The backend.
+
+    def _nat(self) -> Optional[N.NativeBackend]:
+        """The native backend when this client uses it (decided once, on first use)."""
+        if self._native is not False:
+            return self._native
+        base = self.base_env if self.base_env is not None else os.environ
+        want = self._backend_opt or base.get("GAIADESK_SDK_BACKEND") or "auto"
+        if want not in ("auto", "native", "cli"):
+            raise UsageError("backend is auto, native or cli (not %r)" % (want,), kind="usage")
+        mod, why = None, "not wanted"
+        if want == "native" or (want == "auto" and self._cli_opt is None):
+            mod, why = (self._native_mod, "") if self._native_mod is not None else N.load_native()
+        if mod is None and want == "native":
+            raise CliNotFoundError("backend='native', but gaiadesk_native is not usable here: %s "
+                                   "(pip install gaiadesk[native])" % why, kind="not_found")
+        if mod is None:
+            self._native = None
+            return None
+        try:
+            self._native = N.NativeBackend(mod.NativeClient(N.native_options(self.environment(), self.cwd)))
+        except Exception as e:
+            raise N.from_native(e, "client") from e
+        return self._native
+
+    @property
+    def backend(self) -> str:
+        """Which backend runs the operations: ``native`` (gaiadesk_native) or ``cli`` (gaiadesk-cli)."""
+        return "native" if self._nat() is not None else "cli"
+
     # The plans. Public methods in client.py / aio.py run these.
 
     def _p_version(self) -> Plan:
-        return Plan(["--version"], None, text_finish(["--version"], strip=True))
+        return Plan(["--version"], None, text_finish(["--version"], strip=True), N.NativeReq("version", {}, None, N.version_finish))
 
     def _p_devices(self, probe: bool, desk_id: Optional[str]) -> Plan:
         a = A.devices_args(probe, desk_id)
-        return Plan(a, None, op_finish(a, (0, 1)))
+        return Plan(a, None, op_finish(a, (0, 1)), N.NativeReq("devices", N.devices(probe, desk_id)))
 
     def _p_exec(self, desk_id: str, command: A.Command, stdin: Union[None, str, bytes], check: bool, shape: Dict[str, Any]) -> Plan:
         a = A.exec_args(desk_id, command, stdin=stdin is not None, json=True, **shape)
-        return Plan(a, _b(stdin), exec_finish(a, check))
+        return Plan(a, _b(stdin), exec_finish(a, check),
+                    N.NativeReq("exec", N.exec_(desk_id, command, shape), _b(stdin), N.exec_finish("exec", check)))
 
     def _p_shell(self, desk_id: str, script: str, check: bool, shape: Dict[str, Any]) -> Plan:
         a = A.shell_args(desk_id, json=True, **shape)
-        return Plan(a, _b(script), exec_finish(a, check))
+        return Plan(a, _b(script), exec_finish(a, check),
+                    N.NativeReq("shell", N.shell(desk_id, script, shape), None, N.exec_finish("shell", check)))
 
     def _p_cp(self, direction: str, desk_id: str, local: str, remote: str, recursive: bool) -> Plan:
         a = A.cp_args(direction, desk_id, local, remote, recursive)
-        return Plan(a, None, op_finish(a))
+        nargs = {"desk_id": A.check_desk(desk_id), "local": local, "remote": remote, "recursive": recursive}
+        return Plan(a, None, op_finish(a), N.NativeReq(direction, nargs, None, N.cp_finish(direction)))
 
-    def _p_op(self, a: List[str], ok: Sequence[int] = (0,)) -> Plan:
-        return Plan(a, None, op_finish(a, ok))
+    def _p_op(self, a: List[str], ok: Sequence[int] = (0,), native: Optional[N.NativeReq] = None) -> Plan:
+        return Plan(a, None, op_finish(a, ok), native)
 
-    def _p_text(self, a: List[str], strip: bool = False) -> Plan:
-        return Plan(a, None, text_finish(a, strip))
+    def _p_text(self, a: List[str], strip: bool = False, native: Optional[N.NativeReq] = None) -> Plan:
+        return Plan(a, None, text_finish(a, strip), native)
 
-    def _p_none(self, a: List[str]) -> Plan:
-        return Plan(a, None, none_finish(a))
+    def _p_none(self, a: List[str], native: Optional[N.NativeReq] = None) -> Plan:
+        return Plan(a, None, none_finish(a), native)
 
     def _p_mesh_ip(self, desk_id: str) -> Plan:
-        return self._p_text(["mesh", "ip", A.check_desk(desk_id)], strip=True)
+        return self._p_text(["mesh", "ip", A.check_desk(desk_id)], strip=True, native=N.NativeReq("mesh_ip", N.desk(desk_id)))
+
+    def _p_mesh_status(self) -> Plan:
+        return self._p_op(["mesh", "status", "--json"], native=N.NativeReq("mesh_status", {}))
+
+    def _p_run_job(self, desk_id: str, name: str, command: A.Command, limits: Dict[str, Any]) -> Plan:
+        return self._p_op(A.run_args(desk_id, name, command, **limits), native=N.NativeReq("job_run", N.run_job(desk_id, name, command, limits)))
+
+    def _p_jobs(self, desk_id: str) -> Plan:
+        return self._p_op(A.ps_args(desk_id), native=N.NativeReq("job_list", N.desk(desk_id)))
+
+    def _p_kill_job(self, desk_id: str, name: str) -> Plan:
+        return self._p_op(A.kill_args(desk_id, name), native=N.NativeReq("job_kill", N.job(desk_id, name)))
+
+    def _p_job_logs(self, desk_id: str, name: str, tail: Optional[int]) -> Plan:
+        return self._p_text(A.logs_args(desk_id, name, tail), native=N.NativeReq("job_logs", N.logs(desk_id, name, tail)))
+
+    def _p_stats(self, desk_id: str) -> Plan:
+        return self._p_op(A.stats_args(desk_id), native=N.NativeReq("stats", N.desk(desk_id)))
+
+    def _p_measure(self, desk_id: str, count: Optional[int]) -> Plan:
+        return self._p_op(A.measure_args(desk_id, count), (0, 1), native=N.NativeReq("measure", N.measure(desk_id, count)))
+
+    def _p_create_token(self, desks: Union[str, Sequence[str]], spec: Dict[str, Any]) -> Plan:
+        return self._p_op(A.token_create_args(desks, **spec), native=N.NativeReq("token_mint", N.token_create(desks, spec)))
+
+    def _p_list_tokens(self, desk_id: str) -> Plan:
+        return self._p_op(A.token_list_args(desk_id), native=N.NativeReq("token_list", N.desk(desk_id)))
+
+    def _p_revoke_token(self, desk_id: str, name: Optional[str], all_for_desk: bool, account: bool) -> Plan:
+        return self._p_op(A.token_revoke_args(desk_id, name, all_for_desk, account),
+                          native=N.NativeReq("token_revoke", N.token_revoke(desk_id, name, all_for_desk, account)))
+
+    def _p_audit(self, desk_id: str, token: Optional[str], limit: Optional[int], account: bool) -> Plan:
+        return self._p_op(A.audit_args(desk_id, token, limit, account), native=N.NativeReq("audit", N.audit(desk_id, token, limit, account)))
+
+    def _p_disconnect(self, desk_id: Optional[str]) -> Plan:
+        return self._p_none(A.disconnect_args(desk_id), native=N.NativeReq("disconnect", {} if desk_id is None else N.desk(desk_id), None, N.none_finish))
