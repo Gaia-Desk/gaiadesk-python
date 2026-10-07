@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from .errors import UsageError
@@ -115,13 +116,37 @@ def check_env(env: Optional[Mapping[str, str]]) -> Optional[Dict[str, str]]:
     return out
 
 
-def env_flags(env: Optional[Mapping[str, str]]) -> List[str]:
-    """``--env KEY=VALUE`` per variable (exec, run). The values are in gaiadesk-cli's
-    argv on this machine (the native backend passes them in-process instead)."""
+# Names that change how gaiadesk-cli itself runs: never set in its own environment.
+CLI_OWN_ENV = ("PATH", "HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "SystemRoot", "ComSpec")
+
+
+def env_stays_on_argv(name: str, platform: str = sys.platform) -> bool:
+    """A variable gaiadesk-cli must not get in its own environment (it would change
+    how the CLI runs): ``GAIADESK_*`` in any case, and ``CLI_OWN_ENV`` (any case on
+    Windows). Its value goes on argv as ``--env KEY=VALUE`` instead."""
+    if name.upper().startswith("GAIADESK_"):
+        return True
+    if platform == "win32":
+        return name.upper() in {n.upper() for n in CLI_OWN_ENV}
+    return name in CLI_OWN_ENV
+
+
+def env_flags(env: Optional[Mapping[str, str]], platform: str = sys.platform) -> List[str]:
+    """``--env KEY`` per variable (exec, run): gaiadesk-cli takes the value from its
+    own environment (``cli_env``), so values stay off this machine's command lines
+    and keep newlines. A name ``env_stays_on_argv`` is ``--env KEY=VALUE``."""
     a: List[str] = []
     for k, v in (check_env(env) or {}).items():
-        a += ["--env", "%s=%s" % (k, v)]
+        a += ["--env", "%s=%s" % (k, v) if env_stays_on_argv(k, platform) else k]
     return a
+
+
+def cli_env(env: Optional[Mapping[str, str]], platform: str = sys.platform) -> Optional[Dict[str, str]]:
+    """The variables ``env_flags`` names bare: added to gaiadesk-cli's own environment."""
+    e = check_env(env)
+    if not e:
+        return None
+    return {k: v for k, v in e.items() if not env_stays_on_argv(k, platform)} or None
 
 
 def exec_args(desk_id: str, command: Command, *, stdin: bool, json: bool, json_stream: bool = False,

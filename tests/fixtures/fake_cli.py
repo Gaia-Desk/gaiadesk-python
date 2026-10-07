@@ -56,8 +56,10 @@ def log(stdin):
     if not path:
         return
     env = {k: os.environ[k] for k in ("GAIADESK_TOKEN_FILE", "GAIADESK_CODE", "GAIADESK_TOKEN", "GAIADESK_AGENT_TOKEN", "GAIADESK_SERVER", "GAIADESK_PERSIST") if k in os.environ}
+    # A bare ``--env KEY`` takes $KEY from this process's environment, as the real CLI does.
+    passed = {a: os.environ.get(a) for i, a in enumerate(argv) if i > 0 and argv[i - 1] == "--env" and "=" not in a}
     with open(path, "a") as f:
-        f.write(json.dumps({"argv": argv, "env": env, "stdin": stdin}) + "\n")
+        f.write(json.dumps({"argv": argv, "env": env, "stdin": stdin, "passed_env": passed}) + "\n")
 
 
 def failure(kind, message, exit, reason=None, desk=None):

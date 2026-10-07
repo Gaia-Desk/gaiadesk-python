@@ -83,7 +83,7 @@ class AsyncGaiaDesk(Base):
         if n is not None and plan.native is not None:
             return await n.run_async(plan.native)
         await self._require(plan.requires)
-        return plan.finish(await self._complete(plan.args, plan.input))
+        return plan.finish(await self._complete(plan.args, plan.input, plan.env))
 
     async def _require(self, requires: Sequence[Tuple[str, str]]) -> None:
         if requires:
@@ -92,20 +92,21 @@ class AsyncGaiaDesk(Base):
             if err is not None:
                 raise err
 
-    async def _complete(self, args: Sequence[str], input: Optional[bytes]) -> Completed:
+    async def _complete(self, args: Sequence[str], input: Optional[bytes], env: Optional[Dict[str, str]] = None) -> Completed:
         cmd = self.cli + list(args)
         try:
             p = await asyncio.create_subprocess_exec(
                 *cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=self.environment(), cwd=self.cwd,
+                env=self.run_environment(env), cwd=self.cwd,
             )
         except OSError as e:
             raise not_found(cmd[0], args) from e
         out, err = await p.communicate(input if input is not None else b"")
         return Completed(p.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace"))
 
-    async def _stream(self, args: Sequence[str], input: Optional[bytes] = None, keep_open: bool = False) -> AsyncCliStream:
-        return await AsyncCliStream.start(self.cli + list(args), self.environment(), self.cwd, input, keep_open)
+    async def _stream(self, args: Sequence[str], input: Optional[bytes] = None, keep_open: bool = False,
+                      env: Optional[Dict[str, str]] = None) -> AsyncCliStream:
+        return await AsyncCliStream.start(self.cli + list(args), self.run_environment(env), self.cwd, input, keep_open)
 
     async def raw(self, args: Sequence[str], input: Union[None, str, bytes] = None) -> Completed:
         self._cli_only("raw()")
@@ -177,7 +178,7 @@ class AsyncGaiaDesk(Base):
         use_events = json_stream is not False
         a = A.exec_args(desk_id, command, stdin=stdin is not None and stdin is not False, json=False, json_stream=use_events,
                         cwd=cwd, env=env, shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
-        s = await self._stream(a, data, keep_open=stdin is True)
+        s = await self._stream(a, data, keep_open=stdin is True, env=A.cli_env(env))
         return AsyncJsonExecStream(s) if use_events else s  # type: ignore[return-value]
 
     async def shell(self, desk_id: str, script: str, *, check: bool = False, shell: Optional[str] = None,

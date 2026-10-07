@@ -152,15 +152,33 @@ class ClientTest(unittest.TestCase):
             self.gd.kill_job(OK, "nope")
 
     def test_env_and_job_shell(self):
-        self.gd.exec(OK, "make", env={"CI": "1"})
-        self.assertEqual(self.calls()[0]["argv"], ["exec", "--desk-id", OK, "--quiet", "--json", "--no-stdin", "--env", "CI=1", "--", "make"])
-        self.assertEqual(self.gd.run_job(OK, "build", "make", shell="bash", env={"JOBS": "8"})["state"], "running")
-        self.assertEqual(self.calls()[-1]["argv"][6:10], ["--shell", "bash", "--env", "JOBS=8"])
-        s = self.gd.exec_stream(OK, "make", env={"CI": "1"})
+        secret = "hunter2\nsecond line"
+        self.gd.exec(OK, "make", env={"CI": "1", "SECRET": secret})
+        c = self.calls()[0]
+        self.assertEqual(c["argv"], ["exec", "--desk-id", OK, "--quiet", "--json", "--no-stdin", "--env", "CI", "--env", "SECRET", "--", "make"])
+        self.assertEqual(c["passed_env"], {"CI": "1", "SECRET": secret}, "the values reach gaiadesk-cli through its environment, newlines too")
+        self.assertEqual(self.gd.run_job(OK, "build", "make", shell="bash", env={"JOBS": "8", "TOKEN": secret})["state"], "running")
+        c = self.calls()[-1]
+        self.assertEqual(c["argv"][6:12], ["--shell", "bash", "--env", "JOBS", "--env", "TOKEN"])
+        self.assertEqual(c["passed_env"], {"JOBS": "8", "TOKEN": secret})
+        s = self.gd.exec_stream(OK, "make", env={"CI": "1", "SECRET": secret})
         self.assertEqual(s.wait().exit_code, 0)
-        self.assertIn("CI=1", self.calls()[-1]["argv"])
+        self.assertEqual(self.calls()[-1]["passed_env"], {"CI": "1", "SECRET": secret})
+        for call in self.calls():
+            self.assertFalse(any("hunter2" in a or a.endswith("=1") or a.endswith("=8") for a in call["argv"]), call["argv"])
+        # Not leaked into later runs, nor into the client's own environment.
+        self.gd.exec(OK, "make")
+        self.assertEqual(self.calls()[-1]["passed_env"], {})
+        self.assertNotIn("SECRET", self.gd.environment())
         with self.assertRaises(UsageError):
             self.gd.run_job(OK, "build", "make", shell="none")
+
+    def test_env_the_cli_itself_reads_stays_on_argv(self):
+        self.gd.exec(OK, "make", env={"PATH": "/opt/bin", "GAIADESK_SERVER": "wss://x/ws", "CI": "1"})
+        c = self.calls()[0]
+        self.assertEqual(c["argv"][6:12], ["--env", "PATH=/opt/bin", "--env", "GAIADESK_SERVER=wss://x/ws", "--env", "CI"])
+        self.assertEqual(c["passed_env"], {"CI": "1"})
+        self.assertNotIn("GAIADESK_SERVER", c["env"], "gaiadesk-cli's own server is not changed by a variable meant for the command")
 
     def test_wait_job(self):
         r = self.gd.wait_job(OK, "build")

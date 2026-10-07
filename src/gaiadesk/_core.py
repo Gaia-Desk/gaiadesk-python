@@ -60,6 +60,8 @@ class Plan(NamedTuple):
     """The same operation on the API transport; None: the API does not serve it (a UsageError there)."""
     what: str = ""
     """The method, for the API transport's UsageError (``measure()``)."""
+    env: Optional[Dict[str, str]] = None
+    """Variables added to gaiadesk-cli's environment for this run (``--env KEY`` reads them there)."""
 
 
 def api_step(plan: Plan) -> Callable[["ApiTransport"], Any]:
@@ -418,6 +420,13 @@ class Base:
                 raise UsageError("cli must not be empty", kind="usage")
         return self._cli
 
+    def run_environment(self, extra: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+        """``environment()`` plus a run's own variables (``Plan.env``)."""
+        env = self.environment()
+        if extra:
+            env.update(extra)
+        return env
+
     def environment(self) -> Dict[str, str]:
         """The environment gaiadesk-cli runs with: the base env plus the configured credentials."""
         env = dict(self.base_env if self.base_env is not None else os.environ)
@@ -498,7 +507,7 @@ class Base:
         req = ((FEATURE_EXEC_CWD, "exec(cwd=...)"),) if shape.get("cwd") is not None else ()
         return Plan(a, _b(stdin), exec_finish(a, check),
                     N.NativeReq("exec", N.exec_(desk_id, command, shape), _b(stdin), N.exec_finish("exec", check)), req,
-                    api=lambda t: t.exec(desk_id, command, stdin, check, shape))
+                    api=lambda t: t.exec(desk_id, command, stdin, check, shape), env=A.cli_env(shape.get("env")))
 
     def _p_shell(self, desk_id: str, script: str, check: bool, shape: Dict[str, Any]) -> Plan:
         a = A.shell_args(desk_id, json=True, **shape)
@@ -536,7 +545,7 @@ class Base:
         a = A.run_args(desk_id, name, command, **limits)
         req = ((FEATURE_RUN_CWD, "run_job(cwd=...)"),) if limits.get("cwd") is not None else ()
         return Plan(a, None, op_finish(a), N.NativeReq("job_run", N.run_job(desk_id, name, command, limits)), req,
-                    api=lambda t: t.run_job(desk_id, name, command, limits))
+                    api=lambda t: t.run_job(desk_id, name, command, limits), env=A.cli_env(limits.get("env")))
 
     def _p_list(self, a: List[str], key: str, op: str, nargs: Dict[str, Any],
                 api: Optional[Callable[["ApiTransport"], Any]] = None, what: str = "") -> Plan:

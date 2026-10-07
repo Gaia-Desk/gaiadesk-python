@@ -273,13 +273,13 @@ Every result is the CLI's JSON, with the CLI's field names (types in
 | `whoami()` | `whoami --json` | `{source, account}`: `source` is `app`, `login`, `token` or `none` (not signed in: a result, not an error) |
 | `devices(probe=, desk_id=)` | `devices --json [--probe] [-d]` | `{devices[], sources[], notes[], identity}`; with `probe`, unreachable desks have `reachable: False` |
 | `probe(desk_id)` | `devices --probe -d` | one device row with `probe` |
-| `exec(desk_id, command, cwd=, env=, **opts)` | `exec --json [--cwd] [--env K=V]...` | `{exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}` |
+| `exec(desk_id, command, cwd=, env=, **opts)` | `exec --json [--cwd] [--env KEY]...` | `{exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}` |
 | `exec_stream(desk_id, command, cwd=, env=, json_stream=, **opts)` | `exec --json-stream` (`json_stream=False`: `exec`) | a stream of stdout/stderr chunks, then the exit code (and, with events, `result`) |
 | `shell(desk_id, script, **opts)` | `shell --json [--cwd]`, script on stdin | as `exec` |
 | `shell_stream(desk_id, script=None, **opts)` | `shell [--cwd]` | stream; without a script, stdin stays open for `write()`/`end()` |
 | `upload(local, desk_id, remote, recursive=)` | `cp --json <local> <desk>:<remote>` | `{direction, desk, destination, files, dirs, bytes, resumed_bytes, failed[], seconds}` |
 | `download(desk_id, remote, local, recursive=)` | `cp --json <desk>:<remote> <local>` | as above |
-| `run_job(desk_id, name, command, cwd=, shell=, env=, priority=, cpu=, mem=, keep_awake=)` | `run --detach --json [--cwd] [--shell] [--env K=V]...` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement, reason}` |
+| `run_job(desk_id, name, command, cwd=, shell=, env=, priority=, cpu=, mem=, keep_awake=)` | `run --detach --json [--cwd] [--shell] [--env KEY]...` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement, reason}` |
 | `wait_job(desk_id, name, timeout=)` | `wait <job> --json [--timeout]` | `{job, timed_out}`: the job as it ended (its `exit_code` is a result, not an error), or, `timed_out`, as it stands, still running |
 | `jobs(desk_id)` | `ps --json` | job list (from `{"jobs": [...]}`) |
 | `job_logs(desk_id, name, tail=)` | `logs --json` | output text (the `output` of `{job, output}`) |
@@ -309,8 +309,13 @@ open), `check` (raise `CommandError` on a non-zero exit), `cwd` (`exec`,
 paths are from the desk user's home, or from a confined token's folder),
 `env` (`exec`, `exec_stream`, `run_job`: `{NAME: value}`, environment
 variables for the command, never logged by the desk; through gaiadesk-cli
-they are `--env` arguments of its process on this machine, the native
-backend passes them in-process). A program Windows Smart App Control / WDAC
+each is a bare `--env KEY` and its value goes in that gaiadesk-cli
+process's own environment, so values never appear on this machine's
+command lines and keep newlines. The exception: a name that would change how
+gaiadesk-cli itself runs, `GAIADESK_*` (any case), `PATH`, `HOME`,
+`USERPROFILE`, `TMPDIR`, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `SystemRoot`,
+`ComSpec` (any case on Windows), goes as `--env KEY=VALUE` on its command
+line instead. The native backend passes them in-process). A program Windows Smart App Control / WDAC
 refused to start is `error["reason"] == "blocked_by_os_policy"` in an exec
 result, and a job's `reason` (its `state` then says so in words).
 

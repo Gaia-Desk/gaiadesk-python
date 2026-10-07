@@ -27,8 +27,10 @@ class ArgsTest(unittest.TestCase):
 
     def test_env(self):
         self.assertEqual(A.exec_args("1", "make", stdin=False, json=True, env={"CI": "1", "MSG": "a b=c"}, shell="bash"),
-                         ["exec", "--desk-id", "1", "--quiet", "--json", "--no-stdin", "--env", "CI=1", "--env", "MSG=a b=c",
-                          "--shell", "bash", "--", "make"])
+                         ["exec", "--desk-id", "1", "--quiet", "--json", "--no-stdin", "--env", "CI", "--env", "MSG",
+                          "--shell", "bash", "--", "make"], "names only: the values travel in gaiadesk-cli's environment")
+        self.assertEqual(A.cli_env({"CI": "1", "MSG": "a\nb"}), {"CI": "1", "MSG": "a\nb"})
+        self.assertIsNone(A.cli_env(None))
         self.assertEqual(A.exec_args("1", "x", stdin=False, json=True, env={}), A.exec_args("1", "x", stdin=False, json=True))
         for bad in ({"": "x"}, {"A=B": "x"}, {"A B": "x"}, {"A": 1}, {"A": "x\0y"}, ["A=1"]):
             with self.assertRaises(UsageError) as cm:
@@ -36,6 +38,16 @@ class ArgsTest(unittest.TestCase):
             self.assertNotIn("x\0y", str(cm.exception), "an error never shows a value")
         for s in ("bash", "zsh"):
             self.assertIn(s, A.exec_args("1", "x", stdin=False, json=True, shell=s))
+
+    def test_env_names_the_cli_itself_reads_stay_on_argv(self):
+        env = {"GAIADESK_TOKEN": "t", "gaiadesk_x": "y", "PATH": "/opt/bin", "HOME": "/h", "LC_ALL": "C", "Path": "p", "CI": "1"}
+        self.assertEqual(A.env_flags(env, "darwin"),
+                         ["--env", "GAIADESK_TOKEN=t", "--env", "gaiadesk_x=y", "--env", "PATH=/opt/bin", "--env", "HOME=/h",
+                          "--env", "LC_ALL=C", "--env", "Path", "--env", "CI"])
+        self.assertEqual(A.cli_env(env, "darwin"), {"Path": "p", "CI": "1"})
+        self.assertEqual(A.cli_env(env, "win32"), {"CI": "1"}, "case-insensitive on Windows")
+        self.assertIn("systemroot=x", A.env_flags({"systemroot": "x"}, "win32"))
+        self.assertIsNone(A.cli_env({"SystemRoot": "x", "ComSpec": "y", "TMPDIR": "z", "TEMP": "a", "TMP": "b", "USERPROFILE": "c", "LANG": "d"}, "linux"))
 
     def test_wait_and_whoami(self):
         self.assertEqual(A.wait_args("1", "build"), ["wait", "build", "--desk-id", "1", "--json"])
@@ -78,7 +90,7 @@ class ArgsTest(unittest.TestCase):
                           "--keep-awake", "--json", "--", "msbuild app.sln /m"])
         self.assertIn("--no-keep-awake", A.run_args("1", "b", ["./build.sh"], keep_awake=False))
         self.assertEqual(A.run_args("1", "b", "make", shell="pwsh", env={"CONFIG": "Release"}),
-                         ["run", "--detach", "--name", "b", "--desk-id", "1", "--shell", "pwsh", "--env", "CONFIG=Release", "--json", "--", "make"])
+                         ["run", "--detach", "--name", "b", "--desk-id", "1", "--shell", "pwsh", "--env", "CONFIG", "--json", "--", "make"])
         for bad in ("none", "default", "fish"):
             with self.assertRaises(UsageError):
                 A.run_args("1", "b", "make", shell=bad)

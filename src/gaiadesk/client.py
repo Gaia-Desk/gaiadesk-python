@@ -117,7 +117,7 @@ class GaiaDesk(Base):
         if n is not None and plan.native is not None:
             return n.run_sync(plan.native)
         self._require(plan.requires)
-        return plan.finish(self._complete(plan.args, plan.input))
+        return plan.finish(self._complete(plan.args, plan.input, plan.env))
 
     def _require(self, requires: Sequence[Tuple[str, str]]) -> None:
         if requires:
@@ -126,16 +126,17 @@ class GaiaDesk(Base):
             if err is not None:
                 raise err
 
-    def _complete(self, args: Sequence[str], input: Optional[bytes]) -> Completed:
+    def _complete(self, args: Sequence[str], input: Optional[bytes], env: Optional[Dict[str, str]] = None) -> Completed:
         cmd = self.cli + list(args)
         try:
-            p = subprocess.run(cmd, input=input if input is not None else b"", capture_output=True, env=self.environment(), cwd=self.cwd)
+            p = subprocess.run(cmd, input=input if input is not None else b"", capture_output=True, env=self.run_environment(env), cwd=self.cwd)
         except OSError as e:
             raise not_found(cmd[0], args) from e
         return Completed(p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace"))
 
-    def _stream(self, args: Sequence[str], input: Optional[bytes] = None, keep_open: bool = False) -> CliStream:
-        return CliStream(self.cli + list(args), self.environment(), self.cwd, input, keep_open)
+    def _stream(self, args: Sequence[str], input: Optional[bytes] = None, keep_open: bool = False,
+                env: Optional[Dict[str, str]] = None) -> CliStream:
+        return CliStream(self.cli + list(args), self.run_environment(env), self.cwd, input, keep_open)
 
     def raw(self, args: Sequence[str], input: Union[None, str, bytes] = None) -> Completed:
         """Run any gaiadesk-cli command; exit code and output untouched. The escape hatch."""
@@ -256,7 +257,7 @@ class GaiaDesk(Base):
         use_events = json_stream is not False
         a = A.exec_args(desk_id, command, stdin=stdin is not None and stdin is not False, json=False, json_stream=use_events,
                         cwd=cwd, env=env, shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
-        s = self._stream(a, data, keep_open=stdin is True)
+        s = self._stream(a, data, keep_open=stdin is True, env=A.cli_env(env))
         return JsonExecStream(s) if use_events else s  # type: ignore[return-value]
 
     def shell(

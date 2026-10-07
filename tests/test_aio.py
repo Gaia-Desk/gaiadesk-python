@@ -31,7 +31,7 @@ class AsyncClientTest(unittest.TestCase):
 
     def test_ops(self):
         async def go():
-            gd, _ = helpers.setup(AsyncGaiaDesk, code="pw")
+            gd, calls = helpers.setup(AsyncGaiaDesk, code="pw")
             self.assertEqual(await gd.version(), "gaiadesk-cli 0.10.324")
             self.assertEqual(len((await gd.devices())["devices"]), 2)
             self.assertEqual((await gd.upload("dist", OK, "x/", recursive=True))["dirs"], 1)
@@ -49,6 +49,11 @@ class AsyncClientTest(unittest.TestCase):
             self.assertEqual((await gd.whoami())["source"], "none")
             self.assertEqual((await gd.run_job(OK, "build", "make", shell="zsh", env={"A": "1"}))["name"], "build")
             self.assertEqual((await gd.exec(OK, "x", env={"A": "1"}))["exit"], 0)
+            s = await gd.exec_stream(OK, "x", env={"A": "a\nb"})
+            self.assertEqual((await s.wait()).exit_code, 0)
+            envd = [c for c in calls() if "--env" in c["argv"]]
+            self.assertEqual([c["passed_env"] for c in envd], [{"A": "1"}, {"A": "1"}, {"A": "a\nb"}])
+            self.assertFalse(any("=" in a for c in envd for a in c["argv"][c["argv"].index("--env"):c["argv"].index("--")]))
             # Concurrency: several commands at once.
             rs = await asyncio.gather(*(gd.exec(OK, "exit %d" % i) for i in range(4)))
             self.assertEqual([r["exit"] for r in rs], [0, 1, 2, 3])
