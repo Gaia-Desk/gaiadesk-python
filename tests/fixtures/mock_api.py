@@ -322,14 +322,22 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(j, dict) or isinstance(j.get("error"), dict):
                     return self.relay((code, out, err))
                 result = {"job": j, "timed_out": code == 124 and j.get("state") == "running"}
-                if name in ("held", "held-fail"):
-                    # A held answer: keep-alive spaces, then the JSON (or the envelope, in a 200).
-                    fail = {"error": {"kind": "connection_lost", "message": "The desk went away during this operation.",
-                                      "reason": "desk_disconnected", "desk": desk, "request_id": request_id()}}
+                if name in ("held", "held-fail", "held-gone"):
+                    # A held answer, as the API sends one: `GaiaDesk-Held: 1`, keep-alive spaces,
+                    # then the result or (`held-fail`, `held-gone`) the error envelope in the 200,
+                    # with `error.status` the status it would have had.
+                    rid = request_id()
+                    if name == "held-fail":
+                        fail = {"error": {"kind": "connection_lost", "message": "The desk went away during this operation.",
+                                          "reason": "desk_disconnected", "desk": desk, "request_id": rid, "status": 502}}
+                    else:
+                        fail = {"error": {"kind": "failed", "message": 'no job named "held-gone"', "desk": desk,
+                                          "request_id": rid, "status": 422}}
                     payload = json.dumps(result if name == "held" else fail).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
-                    self.send_header("X-Request-Id", request_id())
+                    self.send_header("X-Request-Id", rid)
+                    self.send_header("GaiaDesk-Held", "1")
                     self.end_headers()
                     for _ in range(3):
                         self.wfile.write(b" ")

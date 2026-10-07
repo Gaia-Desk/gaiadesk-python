@@ -132,6 +132,10 @@ class Wire(unittest.TestCase):
         with self.assertRaises(GaiaDeskError) as cm:
             gd.wait_job(OK, "held-fail")
         self.assertEqual((cm.exception.kind, cm.exception.reason), ("connection_lost", "desk_disconnected"))
+        # The held body is oneOf result | envelope: a late `failed` (error.status 422) is the CLI's error, not a result.
+        with self.assertRaises(OperationFailedError) as cm:
+            gd.wait_job(OK, "held-gone")
+        self.assertEqual((cm.exception.kind, cm.exception.json["error"]["status"]), ("failed", 422))
         with self.assertRaises(OperationFailedError):
             gd.wait_job(OK, "nope")
         del WAITS[:]

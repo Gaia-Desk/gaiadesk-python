@@ -615,8 +615,10 @@ class ApiTransport:
     def wait_job(self, desk_id: str, name: str, timeout: Optional[A.Duration]) -> Any:
         """``GET /desks/{id}/jobs/{name}/wait``: ``{job, timed_out}`` once the job is no longer
         running. One request holds at most :data:`API_WAIT_MAX` seconds, so a longer (or no)
-        ``timeout`` asks again until the job ends or the time is up. A held answer may start
-        with keep-alive spaces, and may be the error envelope (the desk failed after its 200)."""
+        ``timeout`` asks again until the job ends or the time is up. A held answer
+        (``GaiaDesk-Held: 1``, its 200 sent before the outcome) starts with keep-alive spaces and
+        is oneOf the result or the error envelope (with ``error.status``, the status it would have
+        had): the envelope is raised as its typed error, whatever the 200."""
         path = self.desk(desk_id) + "/jobs/" + quote(A.check_job_name(name), safe="") + "/wait"
         total = None if timeout is None else seconds(timeout, "timeout")
         started = time.monotonic()
