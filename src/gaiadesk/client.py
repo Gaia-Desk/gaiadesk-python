@@ -1,5 +1,7 @@
 """The synchronous client: each method runs one gaiadesk-cli command (with
-``--json`` where the CLI has it) and returns the CLI's own JSON as a dict."""
+``--json`` where the CLI has it) and returns the CLI's own JSON as a dict.
+Given ``api_key``, the same methods go to GaiaDesk's hosted API instead
+(``_api``): same results and errors, and a UsageError for what it does not serve."""
 
 from __future__ import annotations
 
@@ -8,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Sequence
 
 from . import _args as A
 from . import _native as N
+from ._api import not_over_api
 from ._core import (
     FEATURE_EXEC_CWD,
     FEATURE_SHELL_CWD,
@@ -15,6 +18,7 @@ from ._core import (
     Base,
     Completed,
     Plan,
+    api_step,
     cached_version_info,
     failure,
     features_of,
@@ -24,6 +28,7 @@ from ._core import (
     store_version_info,
     version_info_from,
 )
+from .errors import UsageError
 from .mcp import McpClient
 from .stream import CliStream, Exit, JsonExecStream
 
@@ -94,9 +99,20 @@ class GaiaDesk(Base):
       is installed and no ``cli`` was given, else gaiadesk-cli), ``native`` or
       ``cli``. Default from $GAIADESK_SDK_BACKEND. ``raw()``/``mcp()`` always use the CLI.
     * ``native``: a module to use instead of ``import gaiadesk_native``.
+
+    The API transport (GaiaDesk's hosted HTTPS API; none of the options above apply):
+
+    * ``api_key``: a GaiaDesk API key (``ak_…``) or a signed-in person's session
+      token. Selects the API transport.
+    * ``desk_token``: a scoped agent token (``gdagt_…``) sent as
+      ``X-GaiaDesk-Desk-Token``. From an API key, desk operations need one.
+    * ``base_url``: default ``https://api.gaiadesk.net/v1``.
+    * ``wake``: if a desk is asleep, ring it and wait up to this many seconds (0-120).
     """
 
     def _run(self, plan: Plan) -> Any:
+        if self._api is not None:
+            return api_step(plan)(self._api)
         n = self._nat()
         if n is not None and plan.native is not None:
             return n.run_sync(plan.native)
@@ -123,6 +139,7 @@ class GaiaDesk(Base):
 
     def raw(self, args: Sequence[str], input: Union[None, str, bytes] = None) -> Completed:
         """Run any gaiadesk-cli command; exit code and output untouched. The escape hatch."""
+        self._cli_only("raw()")
         return self._complete(list(args), input.encode("utf-8") if isinstance(input, str) else input)
 
     def version(self) -> str:
@@ -133,7 +150,8 @@ class GaiaDesk(Base):
         """``gaiadesk-cli --version --json``: ``{name, version, features,
         mcp_protocol_versions}``, or None from a CLI too old to answer it (no features).
         Asked once per CLI (path, size and mtime) for the whole process. Always the
-        CLI, whichever backend runs the operations."""
+        CLI, whichever backend runs the operations (not on the API transport)."""
+        self._cli_only("cli_version_info()")
         key = self._features_key()
         hit, info = cached_version_info(key)
         if not hit:
@@ -222,6 +240,13 @@ class GaiaDesk(Base):
         A.exec_args(desk_id, command, stdin=False, json=False, cwd=cwd, env=env,
                     shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)  # validate first
         data = None if stdin is None or isinstance(stdin, bool) else (stdin.encode("utf-8") if isinstance(stdin, str) else stdin)
+        if self._api is not None:
+            if stdin is True:
+                raise not_over_api("exec_stream(stdin=True) (writing stdin as it runs)", "give stdin= as text, or use the CLI or native transport")
+            if json_stream is False:
+                raise not_over_api("exec_stream(json_stream=False)", "the API streams events; drop json_stream=")
+            api_stream = self._api.exec_stream(desk_id, command, data, dict(shell=shell, timeout=timeout, cwd=cwd, env=env))
+            return api_stream  # type: ignore[return-value]
         n = self._nat()
         if n is not None:
             shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, cwd=cwd, env=env)
@@ -257,6 +282,7 @@ class GaiaDesk(Base):
                      cwd: Optional[str] = None) -> CliStream:
         """``shell`` (no --json), streaming. Without ``script``, stdin stays open: ``write()`` lines, then ``end()``.
         ``cwd`` as for ``shell``."""
+        self._cli_only("shell_stream()", "use exec_stream(), or the CLI or native transport")
         a = A.shell_args(desk_id, json=False, shell=shell, timeout=timeout, connect_timeout=connect_timeout, cwd=cwd)
         n = self._nat()
         if n is not None:
@@ -275,6 +301,18 @@ class GaiaDesk(Base):
     def download(self, desk_id: str, remote: str, local: str, *, recursive: bool = False) -> "CpSummary":
         """``cp --json <desk>:<remote> <local>``."""
         return self._run(self._p_cp("download", desk_id, local, remote, recursive))
+
+    def upload_bytes(self, data: Union[str, bytes], desk_id: str, remote: str) -> "CpSummary":
+        """API transport only: write ``data`` to ``remote`` on the desk (``PUT /desks/{id}/files``, at most 256 MB)."""
+        if self._api is None:
+            raise UsageError("upload_bytes is for the API transport (give api_key); use upload() with a local file", kind="usage")
+        return self._api.upload_bytes(data, desk_id, remote)
+
+    def download_bytes(self, desk_id: str, remote: str) -> bytes:
+        """API transport only: the bytes of ``remote`` on the desk (``GET /desks/{id}/files``, at most 256 MB)."""
+        if self._api is None:
+            raise UsageError("download_bytes is for the API transport (give api_key); use download() to a local file", kind="usage")
+        return self._api.download_bytes(desk_id, remote)
 
     # jobs
 
@@ -310,6 +348,8 @@ class GaiaDesk(Base):
         """``logs -f --json <job>``: follow until the job ends; ``kill()`` stops following (not the job).
         ``result`` (``end``, ``interrupted`` or ``error``) at the end."""
         a = A.logs_args(desk_id, name, tail, follow=True)
+        if self._api is not None:
+            return self._api.follow_job_logs(desk_id, name, tail)  # type: ignore[return-value]
         n = self._nat()
         if n is not None:
             return n.stream_sync("job_follow", N.logs(desk_id, name, tail), None, False)  # type: ignore[return-value]
@@ -364,6 +404,7 @@ class GaiaDesk(Base):
     def forward(self, desk_id: str, specs: Union[Dict[str, Any], Sequence[Dict[str, Any]]]) -> Forward:
         """``forward --json``. Each spec: ``remote_port``, optional ``remote_host`` and ``local_port``.
         Returns once every forward is listening. Use as a context manager to stop it."""
+        self._cli_only("forward()")
         lst = [specs] if isinstance(specs, dict) else list(specs)
         a = A.forward_args(desk_id, lst)
         n = self._nat()
@@ -394,6 +435,7 @@ class GaiaDesk(Base):
         """``agent-connect``: prove an agent token opens a screen session (needs ``agent_token``).
         The confirmation line ("agent session open on desk N: screenshot WxH"), made
         from ``agent-connect --json``."""
+        self._cli_only("agent_connect()")
         plan = self._p_agent_connect(desk_id)
         n = self._nat()
         if n is not None:
@@ -402,4 +444,5 @@ class GaiaDesk(Base):
 
     def mcp(self, *, audit_dir: Optional[str] = None, allow_domains: Sequence[str] = ()) -> McpClient:
         """Start ``gaiadesk-cli mcp`` (stdio): the way to the screen tools from code."""
+        self._cli_only("mcp()")
         return McpClient(self.cli + A.mcp_args(audit_dir, allow_domains, self.server), self.environment(), self.cwd)

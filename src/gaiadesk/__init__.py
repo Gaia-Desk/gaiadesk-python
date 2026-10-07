@@ -7,11 +7,15 @@ gaiadesk-cli. ``GaiaDesk(...).backend`` says which.
     r = gd.exec("123456789", "hostname")
     print(r["exit"], r["stdout"])
 
+Given ``api_key``, it drives desks through GaiaDesk's hosted API instead
+(standard library only): ``GaiaDesk(api_key="ak_...", desk_token="gdagt_...")``.
+
 ``AsyncGaiaDesk`` is the asyncio twin.
 """
 
 from .aio import AsyncForward, AsyncGaiaDesk
 from .client import Forward, GaiaDesk
+from ._api import API_FILE_LIMIT, DEFAULT_API_URL, ApiStream, AsyncApiStream
 from ._core import Completed, locate_cli
 from .errors import (
     CliNotFoundError,
@@ -40,6 +44,10 @@ __all__ = [
     "AsyncCliStream",
     "JsonExecStream",
     "AsyncJsonExecStream",
+    "ApiStream",
+    "AsyncApiStream",
+    "DEFAULT_API_URL",
+    "API_FILE_LIMIT",
     "Chunk",
     "Exit",
     "Completed",

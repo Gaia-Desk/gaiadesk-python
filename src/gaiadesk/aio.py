@@ -1,4 +1,5 @@
-"""The asyncio client: the same methods as ``GaiaDesk``, awaitable."""
+"""The asyncio client: the same methods as ``GaiaDesk``, awaitable. On the API
+transport (``api_key``) the HTTP calls run on the default executor's threads."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Sequence
 
 from . import _args as A
 from . import _native as N
+from ._api import AsyncApiStream, not_over_api
 from ._core import (
     FEATURE_EXEC_CWD,
     FEATURE_SHELL_CWD,
@@ -14,6 +16,7 @@ from ._core import (
     Base,
     Completed,
     Plan,
+    api_step,
     cached_version_info,
     failure,
     features_of,
@@ -23,6 +26,7 @@ from ._core import (
     store_version_info,
     version_info_from,
 )
+from .errors import UsageError
 from .mcp import AsyncMcpClient
 from .stream import AsyncCliStream, AsyncJsonExecStream, Exit
 
@@ -73,6 +77,8 @@ class AsyncGaiaDesk(Base):
     (``exec_stream`` & co. return an ``AsyncCliStream``)."""
 
     async def _run(self, plan: Plan) -> Any:
+        if self._api is not None:
+            return await asyncio.get_running_loop().run_in_executor(None, api_step(plan), self._api)
         n = self._nat()
         if n is not None and plan.native is not None:
             return await n.run_async(plan.native)
@@ -102,6 +108,7 @@ class AsyncGaiaDesk(Base):
         return await AsyncCliStream.start(self.cli + list(args), self.environment(), self.cwd, input, keep_open)
 
     async def raw(self, args: Sequence[str], input: Union[None, str, bytes] = None) -> Completed:
+        self._cli_only("raw()")
         return await self._complete(list(args), input.encode("utf-8") if isinstance(input, str) else input)
 
     async def version(self) -> str:
@@ -109,6 +116,7 @@ class AsyncGaiaDesk(Base):
 
     async def cli_version_info(self) -> "Optional[VersionInfo]":
         """As ``GaiaDesk.cli_version_info`` (shares its per-process cache)."""
+        self._cli_only("cli_version_info()")
         key = self._features_key()
         hit, info = cached_version_info(key)
         if not hit:
@@ -153,6 +161,13 @@ class AsyncGaiaDesk(Base):
         A.exec_args(desk_id, command, stdin=False, json=False, cwd=cwd, env=env,
                     shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)  # validate first
         data = None if stdin is None or isinstance(stdin, bool) else (stdin.encode("utf-8") if isinstance(stdin, str) else stdin)
+        if self._api is not None:
+            if stdin is True:
+                raise not_over_api("exec_stream(stdin=True) (writing stdin as it runs)", "give stdin= as text, or use the CLI or native transport")
+            if json_stream is False:
+                raise not_over_api("exec_stream(json_stream=False)", "the API streams events; drop json_stream=")
+            api_stream = self._api.exec_stream(desk_id, command, data, dict(shell=shell, timeout=timeout, cwd=cwd, env=env))
+            return AsyncApiStream(api_stream)  # type: ignore[return-value]
         n = self._nat()
         if n is not None:
             shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, cwd=cwd, env=env)
@@ -174,6 +189,7 @@ class AsyncGaiaDesk(Base):
     async def shell_stream(self, desk_id: str, script: Optional[str] = None, *, shell: Optional[str] = None,
                            timeout: Optional[A.Duration] = None, connect_timeout: Optional[A.Duration] = None,
                            cwd: Optional[str] = None) -> AsyncCliStream:
+        self._cli_only("shell_stream()", "use exec_stream(), or the CLI or native transport")
         a = A.shell_args(desk_id, json=False, shell=shell, timeout=timeout, connect_timeout=connect_timeout, cwd=cwd)
         n = self._nat()
         if n is not None:
@@ -188,6 +204,18 @@ class AsyncGaiaDesk(Base):
 
     async def download(self, desk_id: str, remote: str, local: str, *, recursive: bool = False) -> "CpSummary":
         return await self._run(self._p_cp("download", desk_id, local, remote, recursive))
+
+    async def upload_bytes(self, data: Union[str, bytes], desk_id: str, remote: str) -> "CpSummary":
+        """As ``GaiaDesk.upload_bytes`` (API transport only)."""
+        if self._api is None:
+            raise UsageError("upload_bytes is for the API transport (give api_key); use upload() with a local file", kind="usage")
+        return await asyncio.get_running_loop().run_in_executor(None, self._api.upload_bytes, data, desk_id, remote)
+
+    async def download_bytes(self, desk_id: str, remote: str) -> bytes:
+        """As ``GaiaDesk.download_bytes`` (API transport only)."""
+        if self._api is None:
+            raise UsageError("download_bytes is for the API transport (give api_key); use download() to a local file", kind="usage")
+        return await asyncio.get_running_loop().run_in_executor(None, self._api.download_bytes, desk_id, remote)
 
     async def run_job(self, desk_id: str, name: str, command: A.Command, *, priority: Optional[str] = None,
                       cpu: Optional[int] = None, mem: Union[None, int, str] = None, keep_awake: Optional[bool] = None,
@@ -210,6 +238,8 @@ class AsyncGaiaDesk(Base):
 
     async def follow_job_logs(self, desk_id: str, name: str, *, tail: Optional[int] = None) -> AsyncCliStream:
         a = A.logs_args(desk_id, name, tail, follow=True)
+        if self._api is not None:
+            return AsyncApiStream(self._api.follow_job_logs(desk_id, name, tail))  # type: ignore[return-value]
         n = self._nat()
         if n is not None:
             return await n.stream_async("job_follow", N.logs(desk_id, name, tail), None, False)  # type: ignore[return-value]
@@ -247,6 +277,7 @@ class AsyncGaiaDesk(Base):
         return await self._run(self._p_disconnect(desk_id))
 
     async def forward(self, desk_id: str, specs: Union[Dict[str, Any], Sequence[Dict[str, Any]]]) -> AsyncForward:
+        self._cli_only("forward()")
         lst = [specs] if isinstance(specs, dict) else list(specs)
         a = A.forward_args(desk_id, lst)
         n = self._nat()
@@ -272,6 +303,7 @@ class AsyncGaiaDesk(Base):
         raise failure(Completed(e.exit_code, "", stderr), a, None)
 
     async def agent_connect(self, desk_id: str) -> str:
+        self._cli_only("agent_connect()")
         plan = self._p_agent_connect(desk_id)
         n = self._nat()
         if n is not None:
@@ -279,4 +311,5 @@ class AsyncGaiaDesk(Base):
         return await self._run(plan)
 
     async def mcp(self, *, audit_dir: Optional[str] = None, allow_domains: Sequence[str] = ()) -> AsyncMcpClient:
+        self._cli_only("mcp()")
         return await AsyncMcpClient.start(self.cli + A.mcp_args(audit_dir, allow_domains, self.server), self.environment(), self.cwd)

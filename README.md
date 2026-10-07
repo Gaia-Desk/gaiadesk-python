@@ -20,7 +20,9 @@ agent tokens, forward ports, and reach the screen tools through MCP.
   GaiaDesk app and parses the JSON it prints with `--json`.
 
 Both return the same results (the CLI's JSON shapes and field names) and
-raise the same exceptions with the same `kind`s. This package contains no
+raise the same exceptions with the same `kind`s. A third transport, **API**
+(give an `api_key`), drives desks through GaiaDesk's hosted HTTPS API with
+the standard library only: see [API transport](#api-transport). This package contains no
 GaiaDesk code; GaiaDesk itself is closed-source, and `gaiadesk-native` ships
 under its own licence (see [Backends](#backends)). Where the CLI has no JSON
 output, the SDK says so instead of guessing (see [Known gaps](#known-gaps)).
@@ -39,6 +41,7 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 
 - [Install](#install)
 - [Backends](#backends)
+- [API transport](#api-transport)
 - [Quickstart](#quickstart)
 - [Credentials](#credentials)
 - [API](#api)
@@ -76,7 +79,8 @@ the `cli=` option to point at it.
 
 ## Backends
 
-`gd.backend` says which one a client uses: `"native"` or `"cli"`.
+`gd.backend` says which one a client uses: `"native"` or `"cli"` (or
+`"api"`, given an `api_key`: see [API transport](#api-transport)).
 
 | Option | Effect |
 |---|---|
@@ -93,6 +97,85 @@ and an error's `exit_code` is the one `gaiadesk-cli` would have exited with.
 The blocking client releases the GIL while it waits; cancelling an asyncio
 task stops the native operation. `gaiadesk-native` is proprietary (free to use
 with GaiaDesk; see its LICENSE); this SDK stays MIT.
+
+## API transport
+
+Given an `api_key`, the client talks to GaiaDesk's hosted API
+(`https://api.gaiadesk.net/v1`) over HTTPS with the standard library only
+(`http.client`): no `gaiadesk-cli`, no native extension. Without `api_key`,
+nothing changes: the client picks the native or CLI backend exactly as
+before.
+
+```python
+import os
+from gaiadesk import GaiaDesk, AsyncGaiaDesk
+
+gd = GaiaDesk(
+    api_key=os.environ["GAIADESK_API_KEY"],        # an API key (ak_…), or a signed-in person's session token
+    desk_token=os.environ["GAIADESK_DESK_TOKEN"],  # a scoped agent token (gdagt_…), verified by the desk
+    # base_url="https://api.gaiadesk.net/v1",      # the default
+    # wake=60,                                     # ring a sleeping desk and wait up to 60 s (wake_s)
+)
+gd.backend  # "api"
+r = gd.exec("123456789", "hostname")
+```
+
+`AsyncGaiaDesk(api_key=...)` is the same for asyncio (the HTTP calls run on
+the default executor's threads).
+
+**Credentials.** Every request carries `Authorization: Bearer <api_key>`
+and, when set, `X-GaiaDesk-Desk-Token: <desk_token>`. From an API key, desk
+operations need a scoped agent token (`gdagt_…`, minted with
+`create_token` or `gaiadesk-cli token create`) in `desk_token`: the API
+relays it to the desk, which verifies it. A signed-in person's own session
+works on their own desks without one. **Token administration**
+(`create_token`, `list_tokens`, `revoke_token`) over the API works only for
+a signed-in person's own desk, never from an API key. `wake=<0-120>` rings
+a sleeping desk before each operation and waits that many seconds.
+
+What it serves, with the same results and errors as the CLI transport:
+
+| Method | API |
+|---|---|
+| `devices(desk_id=)` | `GET /desks` (`{devices, sources, notes}`; `desk_id` filters it) |
+| `exec(desk_id, command, ...)` | `POST /desks/{id}/exec` (an `ExecSpec`: `command` or `argv`, `shell`, `cwd`, `stdin`, `timeout_secs`) |
+| `exec_stream(desk_id, command, ...)` | `POST /desks/{id}/exec?stream=1` (Server-Sent Events of `ExecEvent`s) |
+| `run_job`, `jobs`, `kill_job` | `POST` / `GET /desks/{id}/jobs`, `DELETE /desks/{id}/jobs/{name}` |
+| `job_logs(desk_id, name, tail=)` | `GET /desks/{id}/jobs/{name}/logs?tail=` |
+| `follow_job_logs(desk_id, name)` | `GET …/logs?follow=1` (Server-Sent Events of `JobLogEvent`s) |
+| `stats(desk_id)` | `GET /desks/{id}/stats` |
+| `upload(local, desk_id, remote)` | `PUT /desks/{id}/files?path=` with the file's bytes, streamed (a `remote` ending in `/` keeps the file name) |
+| `download(desk_id, remote, local)` | `GET /desks/{id}/files?path=` into `local` (a folder keeps the remote name) |
+| `upload_bytes(data, desk_id, remote)` / `download_bytes(desk_id, remote)` | the same with bytes in memory (API transport only) |
+| `create_token(desks, name=, expires=, scopes=, cwd=, low_priv=)` | `POST /desks/{id}/tokens` (a `MintSpec`), once per desk |
+| `list_tokens(desk_id)` / `revoke_token(desk_id, id)` | `GET /desks/{id}/tokens` / `DELETE /desks/{id}/tokens/{token_id}` |
+
+- **Files** are single files of at most **256 MB** each way; copy folders
+  and larger files through the CLI or native transport.
+- **Streaming**: `exec_stream` and `follow_job_logs` return a stream with
+  the same shape as on the CLI (chunks, `text()`, `wait()` for the `Exit`,
+  `result` for the last event); `kill()` closes the request. stdin is given
+  up front (`stdin=` text or bytes); `stdin=True` is not available.
+- **Errors** are the same classes and kinds, from the API's error envelope
+  (`{"error": {kind, message, reason?, desk?, request_id}}`); the exception
+  also has `status` (HTTP), `request_id` (quote it to support) and
+  `retry_after` (seconds, on a 429). No connection is `UnreachableError`
+  with kind `network`; an answer that is not the envelope is a
+  `ProtocolError`.
+- `timeout=` becomes `timeout_secs`; `connect_timeout`, `persist` and
+  `verbose` do not apply. `create_token` needs a `name` over the API (and
+  defaults `expires` to 7 days, `scopes` to exec, cp, jobs).
+
+**Not available over the API** (a `UsageError`, kind `usage`, saying "not
+available over the API transport; use the CLI or native transport"):
+`shell`, `shell_stream`, `forward`, `agent_connect`, `mcp`, `measure`,
+`mesh_status`, `mesh_ip`, `disconnect`, `audit`, `wait_job`, `whoami`,
+`probe` / `devices(probe=True)`, recursive copies, `env=` (exec,
+exec_stream, run_job) and `shell=` on `run_job` (the API's `ExecSpec` and
+`JobSpec` have neither), `create_token(out=)`,
+`revoke_token(all_for_desk=True)` / `account=True`, `exec_stream` with
+`stdin=True` or `json_stream=False`, and the CLI's own `version`,
+`cli_version_info`, `cli_features`, `raw`.
 
 ## Quickstart
 
@@ -375,7 +458,11 @@ shapes the real CLI documents and records the argv and environment it was
 given (through `fake_cli_old.py` it plays a CLI too old to answer
 `--version --json`, for the `cwd` checks).
 [`tests/fixtures/mock_native.py`](tests/fixtures/mock_native.py) does the
-same for the native library.
+same for the native library, and
+[`tests/fixtures/mock_api.py`](tests/fixtures/mock_api.py) for the hosted
+API (an `http.server` that answers every route from the same fake CLI).
+[`tests/test_transports.py`](tests/test_transports.py) runs the same
+behavioural cases against the CLI and the API transport.
 
 `src/gaiadesk/types_generated.py` is generated by GaiaDesk's
 `scripts/gen-sdk-types.mts` from the CLI's schema

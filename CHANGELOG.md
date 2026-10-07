@@ -4,6 +4,19 @@
 
 For `gaiadesk-cli` / `gaiadesk-native` 0.10.324:
 
+- **API transport.** `GaiaDesk(api_key=..., desk_token=None, base_url=None,
+  wake=None)` (and `AsyncGaiaDesk`) drives desks through GaiaDesk's hosted
+  API (`https://api.gaiadesk.net/v1`) with the standard library only: no
+  gaiadesk-cli, no native extension. Same method names, result shapes and
+  exception classes/kinds for what the API serves (`devices`, `exec`,
+  `exec_stream` over SSE, `run_job`, `jobs`, `kill_job`, `job_logs`,
+  `follow_job_logs` over SSE, `stats`, single-file `upload` / `download` up
+  to 256 MB, `create_token`, `list_tokens`, `revoke_token`), plus
+  `upload_bytes` / `download_bytes`; everything else is a `UsageError`
+  saying it is not available over the API transport. Exceptions gain
+  `status`, `request_id` and `retry_after` (None on the other backends).
+  `backend` is `"api"` for such a client. Constructing without `api_key`
+  behaves exactly as before.
 - `wait_job(desk_id, name, timeout=)` (`wait <job> --json`, the native
   `job_wait`): blocks until the job ends; `{job, timed_out}`. A job's own
   non-zero exit code is a result, not an error.

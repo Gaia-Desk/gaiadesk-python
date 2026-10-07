@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gaiadesk"
 version = "0.1.0"
-description = "Drive GaiaDesk desks from Python: devices, exec, shell, file copy, background jobs, stats, scoped tokens and MCP, through GaiaDesk's native library (gaiadesk[native]) or gaiadesk-cli."
+description = "Drive GaiaDesk desks from Python: devices, exec, shell, file copy, background jobs, stats, scoped tokens and MCP, through GaiaDesk's native library (gaiadesk[native]), gaiadesk-cli, or the hosted GaiaDesk API (standard library only)."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

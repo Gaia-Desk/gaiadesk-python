@@ -43,6 +43,9 @@ class GaiaDeskError(Exception):
         json: Any = None,
         reason: Optional[str] = None,
         desk: Optional[str] = None,
+        request_id: Optional[str] = None,
+        status: Optional[int] = None,
+        retry_after: Optional[float] = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -55,6 +58,12 @@ class GaiaDeskError(Exception):
         """The finer cause the CLI gave (``offline``, ``timeout``, ...), when it gave one."""
         self.desk = desk
         """The desk the failure concerned, when the CLI said."""
+        self.request_id = request_id
+        """API transport: the failed request's id (``req_…``), to quote to support; else None."""
+        self.status = status
+        """API transport: the HTTP status of the failed request; else None."""
+        self.retry_after = retry_after
+        """API transport: seconds to wait before retrying (a 429's ``Retry-After``); else None."""
 
 
 class CliNotFoundError(GaiaDeskError):

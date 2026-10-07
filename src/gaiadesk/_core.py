@@ -3,8 +3,10 @@ gaiadesk-cli, and turning a finished run into a result or a typed error.
 
 Each operation is a ``Plan``: the argv, the stdin bytes, and a ``finish``
 function from the completed run to the result, plus the same operation for
-the native backend (``_native.NativeReq``). ``GaiaDesk`` runs plans with
-``subprocess`` (or the native library); ``AsyncGaiaDesk`` with ``asyncio``.
+the native backend (``_native.NativeReq``) and for the API transport
+(``api``: a function of the ``_api.ApiTransport``; None where the API does not
+serve it). ``GaiaDesk`` runs plans with ``subprocess`` (or the native library,
+or the API); ``AsyncGaiaDesk`` with ``asyncio``.
 """
 
 from __future__ import annotations
@@ -14,10 +16,13 @@ import os
 import sys
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, FrozenSet, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import _args as A
 from . import _native as N
+if TYPE_CHECKING:  # _api imports stream, which imports this module: loaded on first use instead
+    from ._api import ApiTransport
+
 from .errors import (
     CliNotFoundError,
     GaiaDeskError,
@@ -51,6 +56,42 @@ class Plan(NamedTuple):
     native: Optional[N.NativeReq] = None
     requires: Tuple[Tuple[str, str], ...] = ()
     """``(feature, what)`` pairs the CLI must list in ``--version --json`` for this run (CLI backend only)."""
+    api: Optional[Callable[["ApiTransport"], Any]] = None
+    """The same operation on the API transport; None: the API does not serve it (a UsageError there)."""
+    what: str = ""
+    """The method, for the API transport's UsageError (``measure()``)."""
+
+
+def api_step(plan: Plan) -> Callable[["ApiTransport"], Any]:
+    """What the API transport runs for a plan: its ``api``, or the UsageError for one it does not serve."""
+    if plan.api is not None:
+        return plan.api
+    what = plan.what or (plan.args[0] + "()" if plan.args else "this operation")
+
+    def unsupported(_t: "ApiTransport") -> Any:
+        from ._api import not_over_api
+
+        raise not_over_api(what)
+
+    return unsupported
+
+
+def _list_of(key: str, op: str) -> Callable[[Any], Any]:
+    def unwrap(v: Any) -> Any:
+        if isinstance(v, dict) and isinstance(v.get(key), list):
+            return v[key]
+        raise ProtocolError("the GaiaDesk API answered %s without {%r: [...]}" % (op, key), kind="protocol", argv=[op], json=v)
+
+    return unwrap
+
+
+def _field_of(key: str, op: str) -> Callable[[Any], Any]:
+    def field(v: Any) -> Any:
+        if isinstance(v, dict) and isinstance(v.get(key), str):
+            return v[key]
+        raise ProtocolError("the GaiaDesk API answered %s without %r" % (op, key), kind="protocol", argv=[op], json=v)
+
+    return field
 
 
 def _b(data: Union[None, str, bytes]) -> Optional[bytes]:
@@ -333,7 +374,21 @@ class Base:
         cwd: Optional[str] = None,
         backend: Optional[str] = None,
         native: Any = None,
+        api_key: Optional[str] = None,
+        desk_token: Optional[str] = None,
+        base_url: Optional[str] = None,
+        wake: Optional[int] = None,
     ) -> None:
+        self._api: "Optional[ApiTransport]" = None
+        if api_key is None:
+            if desk_token is not None or base_url is not None or wake is not None:
+                raise UsageError("desk_token, base_url and wake are for the API transport: give api_key too", kind="usage")
+        else:
+            if backend is not None or cli is not None or native is not None:
+                raise UsageError("api_key selects the API transport; it cannot be combined with backend, cli or native", kind="usage")
+            from ._api import ApiTransport
+
+            self._api = ApiTransport(api_key, desk_token, base_url, wake)
         self._backend_opt = backend
         self._native_mod = native
         self._native: Any = False  # False: not decided yet; None: the CLI
@@ -410,8 +465,18 @@ class Base:
 
     @property
     def backend(self) -> str:
-        """Which backend runs the operations: ``native`` (gaiadesk_native) or ``cli`` (gaiadesk-cli)."""
+        """Which backend runs the operations: ``api`` (the hosted API, given ``api_key``),
+        ``native`` (gaiadesk_native) or ``cli`` (gaiadesk-cli)."""
+        if self._api is not None:
+            return "api"
         return "native" if self._nat() is not None else "cli"
+
+    def _cli_only(self, what: str, hint: Optional[str] = None) -> None:
+        """On the API transport, the UsageError for an operation it does not serve."""
+        if self._api is not None:
+            from ._api import not_over_api
+
+            raise not_over_api(what, hint) if hint else not_over_api(what)
 
     # What the CLI can do (``--version --json``), asked once per CLI.
 
@@ -421,31 +486,38 @@ class Base:
     # The plans. Public methods in client.py / aio.py run these.
 
     def _p_version(self) -> Plan:
-        return Plan(["--version"], None, text_finish(["--version"], strip=True), N.NativeReq("version", {}, None, N.version_finish))
+        return Plan(["--version"], None, text_finish(["--version"], strip=True), N.NativeReq("version", {}, None, N.version_finish), what="version()")
 
     def _p_devices(self, probe: bool, desk_id: Optional[str]) -> Plan:
         a = A.devices_args(probe, desk_id)
-        return Plan(a, None, op_finish(a, (0, 1)), N.NativeReq("devices", N.devices(probe, desk_id)))
+        api = None if probe else (lambda t: t.devices(desk_id))
+        return Plan(a, None, op_finish(a, (0, 1)), N.NativeReq("devices", N.devices(probe, desk_id)), api=api, what="devices(probe=True)")
 
     def _p_exec(self, desk_id: str, command: A.Command, stdin: Union[None, str, bytes], check: bool, shape: Dict[str, Any]) -> Plan:
         a = A.exec_args(desk_id, command, stdin=stdin is not None, json=True, **shape)
         req = ((FEATURE_EXEC_CWD, "exec(cwd=...)"),) if shape.get("cwd") is not None else ()
         return Plan(a, _b(stdin), exec_finish(a, check),
-                    N.NativeReq("exec", N.exec_(desk_id, command, shape), _b(stdin), N.exec_finish("exec", check)), req)
+                    N.NativeReq("exec", N.exec_(desk_id, command, shape), _b(stdin), N.exec_finish("exec", check)), req,
+                    api=lambda t: t.exec(desk_id, command, stdin, check, shape))
 
     def _p_shell(self, desk_id: str, script: str, check: bool, shape: Dict[str, Any]) -> Plan:
         a = A.shell_args(desk_id, json=True, **shape)
         req = ((FEATURE_SHELL_CWD, "shell(cwd=...)"),) if shape.get("cwd") is not None else ()
         return Plan(a, _b(script), exec_finish(a, check),
-                    N.NativeReq("shell", N.shell(desk_id, script, shape), None, N.exec_finish("shell", check)), req)
+                    N.NativeReq("shell", N.shell(desk_id, script, shape), None, N.exec_finish("shell", check)), req, what="shell()")
 
     def _p_cp(self, direction: str, desk_id: str, local: str, remote: str, recursive: bool) -> Plan:
         a = A.cp_args(direction, desk_id, local, remote, recursive)
         nargs = {"desk_id": A.check_desk(desk_id), "local": local, "remote": remote, "recursive": recursive}
-        return Plan(a, None, op_finish(a), N.NativeReq(direction, nargs, None, N.cp_finish(direction)))
+        api: Optional[Callable[["ApiTransport"], Any]] = None
+        if not recursive:
+            api = (lambda t: t.upload(local, desk_id, remote)) if direction == "upload" else (lambda t: t.download(desk_id, remote, local))
+        return Plan(a, None, op_finish(a), N.NativeReq(direction, nargs, None, N.cp_finish(direction)), api=api,
+                    what="a recursive (folder) %s" % direction)
 
-    def _p_op(self, a: List[str], ok: Sequence[int] = (0,), native: Optional[N.NativeReq] = None) -> Plan:
-        return Plan(a, None, op_finish(a, ok), native)
+    def _p_op(self, a: List[str], ok: Sequence[int] = (0,), native: Optional[N.NativeReq] = None,
+              api: Optional[Callable[["ApiTransport"], Any]] = None, what: str = "") -> Plan:
+        return Plan(a, None, op_finish(a, ok), native, api=api, what=what)
 
     def _p_text(self, a: List[str], strip: bool = False, native: Optional[N.NativeReq] = None) -> Plan:
         return Plan(a, None, text_finish(a, strip), native)
@@ -455,61 +527,69 @@ class Base:
 
     def _p_mesh_ip(self, desk_id: str) -> Plan:
         a = A.mesh_ip_args(desk_id)
-        return Plan(a, None, field_finish(a, "mesh_ip"), N.NativeReq("mesh_ip", N.desk(desk_id), None, N.field_finish("mesh_ip")))
+        return Plan(a, None, field_finish(a, "mesh_ip"), N.NativeReq("mesh_ip", N.desk(desk_id), None, N.field_finish("mesh_ip")), what="mesh_ip()")
 
     def _p_mesh_status(self) -> Plan:
-        return self._p_op(["mesh", "status", "--json"], native=N.NativeReq("mesh_status", {}))
+        return self._p_op(["mesh", "status", "--json"], native=N.NativeReq("mesh_status", {}), what="mesh_status()")
 
     def _p_run_job(self, desk_id: str, name: str, command: A.Command, limits: Dict[str, Any]) -> Plan:
         a = A.run_args(desk_id, name, command, **limits)
         req = ((FEATURE_RUN_CWD, "run_job(cwd=...)"),) if limits.get("cwd") is not None else ()
-        return Plan(a, None, op_finish(a), N.NativeReq("job_run", N.run_job(desk_id, name, command, limits)), req)
+        return Plan(a, None, op_finish(a), N.NativeReq("job_run", N.run_job(desk_id, name, command, limits)), req,
+                    api=lambda t: t.run_job(desk_id, name, command, limits))
 
-    def _p_list(self, a: List[str], key: str, op: str, nargs: Dict[str, Any]) -> Plan:
+    def _p_list(self, a: List[str], key: str, op: str, nargs: Dict[str, Any],
+                api: Optional[Callable[["ApiTransport"], Any]] = None, what: str = "") -> Plan:
         """``ps`` / ``token list`` / ``audit``: the list in ``{"<key>": [...]}``."""
-        return Plan(a, None, list_finish(a, key), N.NativeReq(op, nargs, None, unwrap_list(key, [op])))
+        unwrap = _list_of(key, op)
+        api_list = (lambda t: unwrap(api(t))) if api is not None else None
+        return Plan(a, None, list_finish(a, key), N.NativeReq(op, nargs, None, unwrap_list(key, [op])), api=api_list, what=what)
 
     def _p_wait_job(self, desk_id: str, name: str, timeout: Optional[A.Duration]) -> Plan:
         a = A.wait_args(desk_id, name, timeout)
-        return Plan(a, None, wait_finish(a), N.NativeReq("job_wait", N.wait_job(desk_id, name, timeout)))
+        return Plan(a, None, wait_finish(a), N.NativeReq("job_wait", N.wait_job(desk_id, name, timeout)), what="wait_job()")
 
     def _p_whoami(self) -> Plan:
         a = A.whoami_args()
-        return self._p_op(a, (0, 1), native=N.NativeReq("whoami", {}))
+        return self._p_op(a, (0, 1), native=N.NativeReq("whoami", {}), what="whoami()")
 
     def _p_jobs(self, desk_id: str) -> Plan:
-        return self._p_list(A.ps_args(desk_id), "jobs", "job_list", N.desk(desk_id))
+        return self._p_list(A.ps_args(desk_id), "jobs", "job_list", N.desk(desk_id), api=lambda t: t.jobs(desk_id))
 
     def _p_kill_job(self, desk_id: str, name: str) -> Plan:
-        return self._p_op(A.kill_args(desk_id, name), native=N.NativeReq("job_kill", N.job(desk_id, name)))
+        return self._p_op(A.kill_args(desk_id, name), native=N.NativeReq("job_kill", N.job(desk_id, name)), api=lambda t: t.kill_job(desk_id, name))
 
     def _p_job_logs(self, desk_id: str, name: str, tail: Optional[int]) -> Plan:
         a = A.logs_args(desk_id, name, tail)
-        return Plan(a, None, field_finish(a, "output"), N.NativeReq("job_logs", N.logs(desk_id, name, tail), None, N.field_finish("output")))
+        output = _field_of("output", "job_logs")
+        return Plan(a, None, field_finish(a, "output"), N.NativeReq("job_logs", N.logs(desk_id, name, tail), None, N.field_finish("output")),
+                    api=lambda t: output(t.job_logs(desk_id, name, tail)))
 
     def _p_stats(self, desk_id: str) -> Plan:
-        return self._p_op(A.stats_args(desk_id), native=N.NativeReq("stats", N.desk(desk_id)))
+        return self._p_op(A.stats_args(desk_id), native=N.NativeReq("stats", N.desk(desk_id)), api=lambda t: t.stats(desk_id))
 
     def _p_measure(self, desk_id: str, count: Optional[int]) -> Plan:
-        return self._p_op(A.measure_args(desk_id, count), (0, 1), native=N.NativeReq("measure", N.measure(desk_id, count)))
+        return self._p_op(A.measure_args(desk_id, count), (0, 1), native=N.NativeReq("measure", N.measure(desk_id, count)), what="measure()")
 
     def _p_create_token(self, desks: Union[str, Sequence[str]], spec: Dict[str, Any]) -> Plan:
-        return self._p_op(A.token_create_args(desks, **spec), native=N.NativeReq("token_mint", N.token_create(desks, spec)))
+        return self._p_op(A.token_create_args(desks, **spec), native=N.NativeReq("token_mint", N.token_create(desks, spec)),
+                          api=lambda t: t.create_token(desks, spec))
 
     def _p_list_tokens(self, desk_id: str) -> Plan:
-        return self._p_list(A.token_list_args(desk_id), "tokens", "token_list", N.desk(desk_id))
+        return self._p_list(A.token_list_args(desk_id), "tokens", "token_list", N.desk(desk_id), api=lambda t: t.list_tokens(desk_id))
 
     def _p_revoke_token(self, desk_id: str, name: Optional[str], all_for_desk: bool, account: bool) -> Plan:
         return self._p_op(A.token_revoke_args(desk_id, name, all_for_desk, account),
-                          native=N.NativeReq("token_revoke", N.token_revoke(desk_id, name, all_for_desk, account)))
+                          native=N.NativeReq("token_revoke", N.token_revoke(desk_id, name, all_for_desk, account)),
+                          api=lambda t: t.revoke_token(desk_id, name, all_for_desk, account))
 
     def _p_audit(self, desk_id: str, token: Optional[str], limit: Optional[int], account: bool) -> Plan:
-        return self._p_list(A.audit_args(desk_id, token, limit, account), "events", "audit", N.audit(desk_id, token, limit, account))
+        return self._p_list(A.audit_args(desk_id, token, limit, account), "events", "audit", N.audit(desk_id, token, limit, account), what="audit()")
 
     def _p_disconnect(self, desk_id: Optional[str]) -> Plan:
         a = A.disconnect_args(desk_id)
-        return self._p_op(a, native=N.NativeReq("disconnect", {} if desk_id is None else N.desk(desk_id)))
+        return self._p_op(a, native=N.NativeReq("disconnect", {} if desk_id is None else N.desk(desk_id)), what="disconnect()")
 
     def _p_agent_connect(self, desk_id: str) -> Plan:
         a = A.agent_connect_args(desk_id, self.server)
-        return Plan(a, None, agent_check_finish(a))
+        return Plan(a, None, agent_check_finish(a), what="agent_connect()")
