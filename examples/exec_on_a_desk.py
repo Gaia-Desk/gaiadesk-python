@@ -1,7 +1,7 @@
 """Run one command on a desk and handle every outcome.
 
     export GAIADESK_TOKEN_FILE=~/.config/gaiadesk/bot.token   # a token with the `exec` scope
-    python exec_on_a_desk.py 392586273 "df -h /"
+    python exec_on_a_desk.py 123456789 "df -h /"
 """
 
 import sys

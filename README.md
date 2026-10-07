@@ -61,16 +61,16 @@ gd = GaiaDesk(token_file="/home/me/.config/gaiadesk/bot.token")
 for d in gd.devices()["devices"]:
     print(d["desk_id"], d["name"], d["online"])
 
-r = gd.exec("392586273", "uname -a", shell="sh", timeout=60)
+r = gd.exec("123456789", "uname -a", shell="sh", timeout=60)
 print(r["exit"], r["stdout"], r["route"])
 
 try:
-    gd.upload("./dist", "392586273", "deploy/", recursive=True)
+    gd.upload("./dist", "123456789", "deploy/", recursive=True)
 except RefusedError as e:
     print("the token lacks the cp scope:", e)
 
 # Stream output as it is produced:
-s = gd.exec_stream("392586273", ["npm", "test"])
+s = gd.exec_stream("123456789", ["npm", "test"])
 for stream, text in s.text():
     print(text, end="")
 print("exit", s.wait().exit_code)
@@ -84,7 +84,7 @@ from gaiadesk import AsyncGaiaDesk
 
 async def main():
     gd = AsyncGaiaDesk(token_file="/home/me/.config/gaiadesk/bot.token")
-    results = await asyncio.gather(*(gd.exec(d, "hostname") for d in ["392586273", "608876148"]))
+    results = await asyncio.gather(*(gd.exec(d, "hostname") for d in ["123456789", "234567890"]))
     for r in results:
         print(r["desk"], r["stdout"].strip())
 
@@ -119,11 +119,11 @@ Mint, list and revoke tokens (the desk's owner, with the unattended password):
 ```python
 import os
 owner = GaiaDesk(code=os.environ["DESK_PASSWORD"])
-owner.create_token("392586273", name="ci", scopes=["exec", "cp", "jobs"], expires="24h",
+owner.create_token("123456789", name="ci", scopes=["exec", "cp", "jobs"], expires="24h",
                    cwd="/srv/app", low_priv=True, out="/home/ci/.config/gaiadesk/ci.token")
-owner.list_tokens("392586273")
-owner.revoke_token("392586273", "ci")          # or all_for_desk=True; account=True via your signed-in account
-owner.audit("392586273", token="ci", limit=100)
+owner.list_tokens("123456789")
+owner.revoke_token("123456789", "ci")          # or all_for_desk=True; account=True via your signed-in account
+owner.audit("123456789", token="ci", limit=100)
 ```
 
 Scopes: `exec`, `shell`, `cp`, `forward`, `jobs`, `screen` (default
@@ -195,7 +195,7 @@ from gaiadesk import GaiaDesk, tool_image
 
 gd = GaiaDesk(agent_token=os.environ["GAIADESK_AGENT_TOKEN"])
 with gd.mcp(audit_dir="/var/log/gaiadesk-agent") as m:
-    opened = m.call_tool("gaiadesk.open_session", {"desk_id": "392586273"})
+    opened = m.call_tool("gaiadesk.open_session", {"desk_id": "123456789"})
     session = opened["structuredContent"]["session_id"]
     shot = tool_image(m.call_tool("gaiadesk.screenshot", {"session_id": session}))
     m.call_tool("gaiadesk.click", {"session_id": session, "x": 200, "y": 140})

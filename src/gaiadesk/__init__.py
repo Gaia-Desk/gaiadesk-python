@@ -2,7 +2,7 @@
 
     from gaiadesk import GaiaDesk
     gd = GaiaDesk(token_file="~/.config/gaiadesk/bot.token")
-    r = gd.exec("392586273", "hostname")
+    r = gd.exec("123456789", "hostname")
     print(r["exit"], r["stdout"])
 
 ``AsyncGaiaDesk`` is the asyncio twin.

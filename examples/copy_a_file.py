@@ -2,7 +2,7 @@
 A copy is resumable: run it again after an interruption and it continues.
 
     export GAIADESK_TOKEN_FILE=~/.config/gaiadesk/bot.token   # scopes: cp, exec
-    python copy_a_file.py 392586273 ./site
+    python copy_a_file.py 123456789 ./site
 """
 
 import sys

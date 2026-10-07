@@ -11,8 +11,8 @@ from gaiadesk._core import standard_locations
 
 class ArgsTest(unittest.TestCase):
     def test_exec(self):
-        self.assertEqual(A.exec_args("392586273", "ls | wc -l", stdin=False, json=True),
-                         ["exec", "--desk-id", "392586273", "--quiet", "--json", "--no-stdin", "--", "ls | wc -l"])
+        self.assertEqual(A.exec_args("123456789", "ls | wc -l", stdin=False, json=True),
+                         ["exec", "--desk-id", "123456789", "--quiet", "--json", "--no-stdin", "--", "ls | wc -l"])
         self.assertEqual(A.exec_args("1", ["printf", "%s", "a b"], stdin=True, json=False, shell="none"),
                          ["exec", "--desk-id", "1", "--quiet", "--stdin", "--shell", "none", "--", "printf", "%s", "a b"])
 
@@ -43,8 +43,8 @@ class ArgsTest(unittest.TestCase):
         self.assertEqual(A.local_path("C:\\Users\\me\\a.txt"), "C:\\Users\\me\\a.txt")
 
     def test_run(self):
-        self.assertEqual(A.run_args("608876148", "build", "msbuild app.sln /m", priority="low", cpu=50, mem="4G", keep_awake=True),
-                         ["run", "--detach", "--name", "build", "--desk-id", "608876148", "--priority", "low", "--cpu", "50", "--mem", "4G",
+        self.assertEqual(A.run_args("234567890", "build", "msbuild app.sln /m", priority="low", cpu=50, mem="4G", keep_awake=True),
+                         ["run", "--detach", "--name", "build", "--desk-id", "234567890", "--priority", "low", "--cpu", "50", "--mem", "4G",
                           "--keep-awake", "--json", "--", "msbuild app.sln /m"])
         self.assertIn("--no-keep-awake", A.run_args("1", "b", ["./build.sh"], keep_awake=False))
         for kw in (dict(name="-x"), dict(cpu=0), dict(priority="urgent")):
