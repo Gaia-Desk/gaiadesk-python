@@ -1,5 +1,19 @@
 """Typed errors, mapped from what gaiadesk-cli reports.
 
+Since 0.10.324 every ``--json`` failure is ONE envelope on stdout::
+
+    {"error": {"kind": "...", "message": "...", "reason": "...", "desk": "..."}}
+
+``kind`` is one of six: usage, refused, unreachable, connection_lost, failed,
+protocol; ``reason`` (optional) is the finer cause (offline, unknown_desk,
+not_online, network, not_signed_in, timeout, local, ...); ``desk`` (optional)
+the desk it concerned. ``exec``/``shell --json`` keep their whole object and
+put the same ``{kind, message, reason}`` in its ``error``.
+
+Older CLIs printed other shapes, still read here: ``{"error": "<text>"}``,
+``{"refused": "<text>"}``, exec's ``{"error": {"kind": "offline", ...}}``
+(the finer cause as the kind), or only a sentence on stderr.
+
 Exit codes (``gaiadesk-cli --help``):
 
 * exec/shell: 0-255 the remote command's own; 124 ``--timeout`` ran out;
@@ -7,11 +21,6 @@ Exit codes (``gaiadesk-cli --help``):
   refused; 255 gaiadesk-cli's own error.
 * desk operations (cp, run, ps, logs, kill, stats, token, audit, ...):
   0 done; 1 ran and did not succeed; 254 refused; 255 own error.
-
-``exec --json`` / ``shell --json`` failures before the command ran carry
-``"error": {"kind", "message"}`` with kind one of: usage, offline,
-unknown_desk, not_online, refused, network, not_signed_in, timeout,
-connection_lost, local.
 """
 
 from __future__ import annotations
@@ -20,7 +29,12 @@ from typing import Any, Dict, NamedTuple, Optional, Sequence
 
 
 class GaiaDeskError(Exception):
-    """Base class. ``exit_code``, ``kind``, ``stderr``, ``argv`` and ``json`` describe the failure."""
+    """Base class. ``exit_code``, ``kind``, ``reason``, ``desk``, ``stderr``,
+    ``argv`` and ``json`` describe the failure.
+
+    ``kind`` is the finer cause when the CLI gave one (``offline``,
+    ``unknown_desk``, ...), else the envelope's kind (``refused``,
+    ``failed``, ...) or an SDK kind (``cli_error``, ``not_found``)."""
 
     def __init__(
         self,
@@ -31,6 +45,8 @@ class GaiaDeskError(Exception):
         stderr: str = "",
         argv: Sequence[str] = (),
         json: Any = None,
+        reason: Optional[str] = None,
+        desk: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -39,6 +55,10 @@ class GaiaDeskError(Exception):
         self.stderr = stderr
         self.argv = list(argv)
         self.json = json
+        self.reason = reason
+        """The finer cause the CLI gave (``offline``, ``timeout``, ...), when it gave one."""
+        self.desk = desk
+        """The desk the failure concerned, when the CLI said."""
 
 
 class CliNotFoundError(GaiaDeskError):
@@ -46,15 +66,18 @@ class CliNotFoundError(GaiaDeskError):
 
 
 class UsageError(GaiaDeskError):
-    """Bad arguments (kind ``usage``), caught by the SDK or by gaiadesk-cli."""
+    """Bad arguments (kind ``usage``), caught by the SDK or by gaiadesk-cli;
+    also an option the installed gaiadesk-cli is too old for (e.g. ``cwd``)."""
 
 
 class RefusedError(GaiaDeskError):
-    """The desk said no: wrong code, a token without the scope, expired/revoked, permission off (exit 254)."""
+    """The desk said no: wrong code, a token without the scope, expired/revoked, permission off,
+    a ``cwd`` outside a confined token's folder (exit 254)."""
 
 
 class UnreachableError(GaiaDeskError):
-    """The desk could not be reached: offline, unknown_desk, not_online, network, not_signed_in, timeout."""
+    """The desk could not be reached: kind ``unreachable``; ``kind``/``reason`` say which
+    (offline, unknown_desk, not_online, network, not_signed_in, timeout)."""
 
 
 class ConnectionLostError(GaiaDeskError):
@@ -62,11 +85,13 @@ class ConnectionLostError(GaiaDeskError):
 
 
 class OperationFailedError(GaiaDeskError):
-    """A desk operation ran and did not succeed (exit 1): a file failed to copy, no such job, ..."""
+    """A desk operation ran and did not succeed (kind ``failed``, exit 1): a file failed to copy, no such job, ..."""
 
 
 class ProtocolError(GaiaDeskError):
-    """gaiadesk-cli printed something that is not the JSON it documents."""
+    """gaiadesk-cli printed something that is not the JSON it documents, or
+    (kind ``protocol``) the desk answered something the CLI can't use,
+    usually a GaiaDesk too old for the request."""
 
 
 class CommandError(GaiaDeskError):
@@ -86,20 +111,42 @@ class McpError(GaiaDeskError):
         self.data = data
 
 
+KINDS = ("usage", "refused", "unreachable", "connection_lost", "failed", "protocol")
+"""The six kinds of the CLI's error envelope (0.10.324+)."""
+
 _UNREACHABLE = {"offline", "unknown_desk", "not_online", "network", "not_signed_in", "timeout"}
 
+# Finer causes (the envelope's ``reason``; before 0.10.324, exec's own
+# ``kind``) that become the SDK error's ``kind``.
+REASONS = frozenset(_UNREACHABLE | {"connection_lost", "local", "interrupted"})
 
-def error_for_kind(kind: str, message: str, **details: Any) -> GaiaDeskError:
-    details["kind"] = kind
-    if kind == "usage":
-        return UsageError(message, **details)
-    if kind == "refused":
-        return RefusedError(message, **details)
-    if kind == "connection_lost":
-        return ConnectionLostError(message, **details)
+_CLASSES = {
+    "usage": UsageError,
+    "refused": RefusedError,
+    "unreachable": UnreachableError,
+    "connection_lost": ConnectionLostError,
+    "failed": OperationFailedError,
+    "protocol": ProtocolError,
+}
+
+
+def error_class(kind: str) -> type:
+    """The class for an envelope kind (or an older CLI's finer kind)."""
     if kind in _UNREACHABLE:
-        return UnreachableError(message, **details)
-    return GaiaDeskError(message, **details)
+        return UnreachableError
+    return _CLASSES.get(kind, GaiaDeskError)
+
+
+def sdk_kind(kind: str, reason: Optional[str]) -> str:
+    """The SDK error's ``kind``: the finer reason when it is a known one, else the kind."""
+    return reason if isinstance(reason, str) and reason in REASONS else kind
+
+
+def error_for_kind(kind: str, message: str, reason: Optional[str] = None, **details: Any) -> GaiaDeskError:
+    details["kind"] = sdk_kind(kind, reason)
+    details["reason"] = reason
+    err: GaiaDeskError = error_class(kind)(message, **details)
+    return err
 
 
 def error_for_exit(code: Optional[int], message: str, **details: Any) -> GaiaDeskError:
@@ -122,20 +169,29 @@ def error_for_exit(code: Optional[int], message: str, **details: Any) -> GaiaDes
 class ErrorEnvelope(NamedTuple):
     """What a gaiadesk-cli JSON output says went wrong."""
 
-    kind: Optional[str]  # a machine-readable kind, when the CLI gave one (today only exec/shell do)
+    kind: Optional[str]
+    """A machine-readable kind, when the CLI gave one (one of ``KINDS`` from 0.10.324)."""
     message: str
+    reason: Optional[str] = None
+    """The finer cause (0.10.324+), when there is one."""
+    desk: Optional[str] = None
+    """The desk it concerned (0.10.324+), when the CLI said."""
+
+
+def _opt_str(v: Any) -> Optional[str]:
+    return v if isinstance(v, str) and v else None
 
 
 def error_envelope(parsed: Any) -> Optional[ErrorEnvelope]:
     """THE place that knows how gaiadesk-cli spells an error in its JSON.
 
-    Every error path in the SDK goes through here, so a change to the CLI's
-    error envelope is a change to this function only. Shapes recognized
-    today::
+    Every error path in the SDK goes through here. Shapes recognized::
 
-        {"error": {"kind": "...", "message": "..."}}   exec/shell, before the command ran
-        {"error": "..."}                                most desk operations
-        {"refused": "..."}                              cp
+        {"error": {"kind", "message", "reason"?, "desk"?}}  0.10.324+: every --json failure,
+                                                           and the "error" of exec/shell's object
+        {"error": {"kind": "offline", "message": "..."}}   older exec/shell, before the command ran
+        {"error": "..."}                                   older desk operations
+        {"refused": "..."}                                 older cp
 
     Returns None when the JSON is not an error (including exec's own
     ``"error": null`` on success).
@@ -145,7 +201,7 @@ def error_envelope(parsed: Any) -> Optional[ErrorEnvelope]:
     e = parsed.get("error")
     if isinstance(e, dict) and isinstance(e.get("kind"), str):
         m = e.get("message")
-        return ErrorEnvelope(e["kind"], m if isinstance(m, str) else "")
+        return ErrorEnvelope(e["kind"], m if isinstance(m, str) else "", _opt_str(e.get("reason")), _opt_str(e.get("desk")))
     if isinstance(e, str) and e:
         return ErrorEnvelope(None, e)
     r = parsed.get("refused")
@@ -155,18 +211,45 @@ def error_envelope(parsed: Any) -> Optional[ErrorEnvelope]:
 
 
 def error_from_run(code: Optional[int], stderr: str, argv: Sequence[str], parsed: Any) -> GaiaDeskError:
-    """The typed error for a failed run: the JSON's error envelope (with its
-    kind when it has one), else the exit code with the best message available
-    (envelope, a ``{"desk", "ok": False, "message"}`` reply, or stderr)."""
-    details: Dict[str, Any] = dict(exit_code=code, stderr=stderr, argv=argv, json=parsed)
+    """The typed error for a failed run: the JSON's error envelope (its kind,
+    reason and desk when it has them), else the exit code with the best
+    message available (envelope, a ``{"desk", "ok": False, "message"}``
+    reply, or stderr)."""
     env = error_envelope(parsed)
+    desk = env.desk if env is not None else None
+    if desk is None and isinstance(parsed, dict):
+        desk = _opt_str(parsed.get("desk"))
+    details: Dict[str, Any] = dict(exit_code=code, stderr=stderr, argv=argv, json=parsed, desk=desk)
     if env is not None and env.kind is not None:
-        return error_for_kind(env.kind, env.message, **details)
+        return error_for_kind(env.kind, env.message or last_stderr_line(stderr) or env.kind, env.reason, **details)
     msg = env.message if env is not None else ""
     if not msg and isinstance(parsed, dict) and isinstance(parsed.get("message"), str):
         msg = parsed["message"]
     msg = msg or last_stderr_line(stderr) or "gaiadesk-cli exited with %s" % code
     return error_for_exit(code, msg, **details)
+
+
+def exec_outcome(r: Dict[str, Any], check: bool, code: Optional[int], stderr: str, args: Sequence[str]) -> Any:
+    """An exec/shell result (or exit event): returned, or the error it means."""
+    details: Dict[str, Any] = dict(exit_code=code, stderr=stderr, argv=args, json=r)
+    env = error_envelope(r)
+    # The command never ran (or the connection went): an error with a kind.
+    # ``failed`` is the command's own failure (could not start, stopped,
+    # timed out): a result, unless nothing ran at all.
+    if env is not None and env.kind is not None:
+        never_ran = r.get("remote_code") is None and r["exit"] == 255
+        if env.kind != "failed" or never_ran:
+            raise error_from_run(code, stderr, args, r)
+    # An older CLI: the desk refused the command itself (exit 254, it never ran; "error" a string).
+    if r["exit"] == 254 and r.get("remote_code") in (-1, None):
+        details["kind"] = "refused"
+        details["desk"] = r.get("desk") if isinstance(r.get("desk"), str) else None
+        raise RefusedError((env.message if env else "") or last_stderr_line(stderr) or "the desk refused the command", **details)
+    if check and r["exit"] != 0:
+        why = "timed out" if r.get("timed_out") else "exited %d" % r["exit"]
+        details["kind"] = "failed"
+        raise CommandError("command on desk %s %s" % (r.get("desk"), why), r, **details)
+    return r
 
 
 def last_stderr_line(stderr: str) -> str:

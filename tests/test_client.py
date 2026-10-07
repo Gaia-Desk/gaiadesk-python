@@ -39,7 +39,7 @@ class ClientTest(unittest.TestCase):
         self.gd, self.calls = helpers.setup(GaiaDesk)
 
     def test_version(self):
-        self.assertEqual(self.gd.version(), "gaiadesk-cli 0.1.0")
+        self.assertEqual(self.gd.version(), "gaiadesk-cli 0.10.324")
 
     def test_credentials_in_env_never_argv(self):
         gd, calls = helpers.setup(GaiaDesk, token_file="/t/bot.token", account_token="acct", agent_token="gdagt_x",
@@ -169,7 +169,7 @@ class ClientTest(unittest.TestCase):
         with self.assertRaises(RefusedError):
             self.gd.list_tokens(OK)
         gd, calls = helpers.setup(GaiaDesk, code="owner-pw")
-        made = gd.create_token([OK, "100000009"], name="bot", scopes=["exec", "cp"])
+        made = gd.create_token([OK, OFFLINE], name="bot", scopes=["exec", "cp"])
         self.assertEqual(len(made["tokens"]), 2)
         self.assertTrue(made["tokens"][0]["secret"].startswith("gdagt_"))
         to_file = gd.create_token(OK, out="/tmp/bot.token")
@@ -188,7 +188,7 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(self.gd.mesh_status()["peers"][0]["mesh_ip"], "100.64.0.2")
         self.assertEqual(self.gd.mesh_ip(OK), "100.64.0.2")
         with self.assertRaises(OperationFailedError):
-            self.gd.mesh_ip("100000009")
+            self.gd.mesh_ip(OFFLINE)
         self.gd.disconnect(OK)
         self.gd.disconnect()
         self.assertEqual([c["argv"] for c in self.calls()][-2:], [["disconnect", "--desk-id", OK], ["disconnect", "--all"]])
@@ -210,29 +210,27 @@ class ClientTest(unittest.TestCase):
     def test_mcp(self):
         gd, _ = helpers.setup(GaiaDesk, server="wss://example.invalid/ws")
         with gd.mcp(audit_dir="/tmp/audit") as m:
-            self.assertEqual([t["name"] for t in m.list_tools()], ["gaiadesk.exec", "gaiadesk.screenshot"])
-            r = m.call_tool("gaiadesk.exec", {"desk_id": OK, "command": "hostname"})
+            self.assertEqual([t["name"] for t in m.list_tools()], ["gaiadesk_exec", "gaiadesk_screenshot"])
+            r = m.call_tool("gaiadesk_exec", {"desk_id": OK, "command": "hostname"})
             self.assertFalse(r["isError"])
             self.assertEqual(r["structuredContent"]["stdout"], "ran: hostname\n")
             self.assertEqual(tool_text(r), "exit 0")
-            self.assertEqual(tool_image(m.call_tool("gaiadesk.screenshot", {"session_id": "h"})), {"mime_type": "image/png", "base64": "iVBORw0K"})
+            self.assertEqual(tool_image(m.call_tool("gaiadesk_screenshot", {"session_id": "h"})), {"mime_type": "image/png", "base64": "iVBORw0K"})
             with self.assertRaises(McpError) as cm:
-                m.call_tool("gaiadesk.nope")
+                m.call_tool("gaiadesk_nope")
             self.assertEqual(cm.exception.code, -32602)
             self.assertEqual(m.request("tools/list")["argv"], ["mcp", "--server", "wss://example.invalid/ws", "--audit-dir", "/tmp/audit"])
         with self.assertRaises(GaiaDeskError):
             m.list_tools()
 
     def test_mcp_tool_name_spellings(self):
-        # A server that advertises today's dotted names.
-        gd, _ = helpers.setup(GaiaDesk)
+        # A server before 0.10.324: dotted names.
+        gd, _ = helpers.setup(GaiaDesk, old=True)
         with gd.mcp() as m:
+            self.assertEqual([t["name"] for t in m.list_tools()], ["gaiadesk.exec", "gaiadesk.screenshot"])
             self.assertEqual(tool_text(m.call_tool("gaiadesk_exec", {"desk_id": OK, "command": "hostname"})), "exit 0")
-        # A server that advertises names without dots.
-        d = tempfile.mkdtemp(prefix="gaiadesk-sdk-")
-        env = helpers.base_env(os.path.join(d, "calls.jsonl"))
-        env["FAKE_TOOL_STYLE"] = "underscore"
-        gd2, _ = helpers.setup(GaiaDesk, env=env)
+        # 0.10.324+: gaiadesk_<tool>; the dotted spelling still resolves.
+        gd2, _ = helpers.setup(GaiaDesk)
         with gd2.mcp() as m:
             self.assertEqual(tool_text(m.call_tool("gaiadesk.exec", {"desk_id": OK, "command": "hostname"})), "exit 0")
             self.assertEqual(tool_text(m.call_tool("gaiadesk_exec", {"desk_id": OK, "command": "hostname"})), "exit 0")

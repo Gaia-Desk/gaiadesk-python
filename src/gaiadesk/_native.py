@@ -8,7 +8,12 @@ knows the extension's surface, which is small and generic:
     .stream(op, args, input, keep_stdin_open) / .stream_sync(...)  -> next()/next_sync(), write, end, stop
     .forward(args) / .forward_sync(args)                           -> listening, stop, wait()/wait_sync()
     .screen(desk_id) / .screen_sync(desk_id)                       -> call()/call_sync(op), close()/close_sync()
-    errors: an exception with .kind, .reason, .json
+    errors: an exception with .kind, .reason, .json (the CLI's error envelope,
+    ``{"error": {kind, message, reason?, desk?}}``, from 0.10.324)
+
+Results are the CLI's v2 ``--json`` shapes (``job_list`` ``{jobs}``,
+``job_logs`` ``{job, output}``, ...); exec/shell (call and stream) and
+job_run take an optional ``cwd``.
 """
 
 from __future__ import annotations
@@ -18,14 +23,12 @@ import importlib
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Mapping, NamedTuple, Optional, Tuple
 
 from .errors import (
-    CommandError,
-    ConnectionLostError,
     GaiaDeskError,
     OperationFailedError,
-    ProtocolError,
-    RefusedError,
-    UnreachableError,
-    UsageError,
+    error_class,
+    error_envelope,
+    exec_outcome,
+    sdk_kind,
 )
 from .stream import Chunk, Exit
 from ._native_args import (  # noqa: F401  (the plans in _core build their native arguments through here)
@@ -44,21 +47,6 @@ from ._native_args import (  # noqa: F401  (the plans in _core build their nativ
     token_revoke,
 )
 
-_SDK_KINDS = {
-    "usage", "offline", "unknown_desk", "not_online", "refused", "network", "not_signed_in", "timeout",
-    "connection_lost", "local", "failed", "interrupted", "protocol", "unreachable",
-}
-
-_CLASSES = {
-    "usage": UsageError,
-    "refused": RefusedError,
-    "unreachable": UnreachableError,
-    "connection_lost": ConnectionLostError,
-    "failed": OperationFailedError,
-    "protocol": ProtocolError,
-}
-
-
 def load_native(importer: Callable[[str], Any] = importlib.import_module) -> Tuple[Any, str]:
     """``(gaiadesk_native module, "")`` when it imports and its binary loads, else ``(None, why)``."""
     try:
@@ -76,16 +64,24 @@ def exit_for(kind: str) -> int:
 
 def from_native(e: BaseException, op: str) -> GaiaDeskError:
     """The SDK error for a native one: the class from its ``kind`` (the class the
-    CLI backend raises), the SDK kind from its finer ``reason`` when it has one."""
+    CLI backend raises), the SDK kind from its finer ``reason`` when it has one,
+    and the desk from its error envelope (``.json``)."""
     if isinstance(e, GaiaDeskError):
         return e
     kind = getattr(e, "kind", None)
     if not isinstance(kind, str):
         kind = "protocol"
+    data = getattr(e, "json", None)
+    env = error_envelope(data)
     reason = getattr(e, "reason", None)
-    sdk_kind = reason if isinstance(reason, str) and reason in _SDK_KINDS else (kind if kind in _SDK_KINDS else "protocol")
-    cls = _CLASSES.get(kind, GaiaDeskError)
-    return cls(str(e), exit_code=exit_for(kind), kind=sdk_kind, argv=[op], json=getattr(e, "json", None))
+    if not isinstance(reason, str):
+        reason = env.reason if env is not None else None
+    desk = env.desk if env is not None else None
+    if desk is None and isinstance(data, dict) and isinstance(data.get("desk"), str):
+        desk = data["desk"]
+    err: GaiaDeskError = error_class(kind)(str(e), exit_code=exit_for(kind), kind=sdk_kind(kind, reason), argv=[op], json=data,
+                                          reason=reason, desk=desk)
+    return err
 
 
 def native_options(env: Mapping[str, str], cwd: Optional[str]) -> Dict[str, Any]:
@@ -118,10 +114,7 @@ class NativeReq(NamedTuple):
 
 def exec_finish(op: str, check: bool) -> Callable[[Any], Any]:
     def finish(r: Any) -> Any:
-        if check and r["exit"] != 0:
-            why = "timed out" if r.get("timed_out") else "exited %d" % r["exit"]
-            raise CommandError("command on desk %s %s" % (r.get("desk"), why), r, exit_code=r["exit"], argv=[op], json=r, kind="failed")
-        return r
+        return exec_outcome(r, check, r.get("exit"), "", [op])
 
     return finish
 
@@ -132,6 +125,16 @@ def cp_finish(op: str) -> Callable[[Any], Any]:
         if failed:
             raise OperationFailedError("%d file(s) failed to copy" % len(failed), exit_code=1, argv=[op], json=r, kind="failed")
         return r
+
+    return finish
+
+
+def field_finish(key: str) -> Callable[[Any], Any]:
+    """A v2 object's one field (``job_logs`` -> ``output``, ``mesh_ip`` -> ``mesh_ip``); an older
+    native library's bare value as it is."""
+
+    def finish(r: Any) -> Any:
+        return r[key] if isinstance(r, dict) and key in r else r
 
     return finish
 
@@ -147,10 +150,17 @@ def none_finish(_r: Any) -> None:
 # ───────────────────────────── streams ─────────────────────────────
 
 
+def _error_text(result: Dict[str, Any]) -> str:
+    e = result.get("error")
+    if isinstance(e, dict):
+        m = e.get("message")
+        return m if isinstance(m, str) else ""
+    return e if isinstance(e, str) else ""
+
+
 def _exit_of(result: Dict[str, Any], tail: str) -> Exit:
     code = result.get("exit") if isinstance(result.get("exit"), int) else 0
-    err = result.get("error") if isinstance(result.get("error"), str) else ""
-    return Exit(code, _last_line(tail) or err)
+    return Exit(code, _last_line(tail) or _error_text(result))
 
 
 def _last_line(s: str) -> str:
@@ -166,6 +176,8 @@ class NativeStream:
         self.argv = [op]
         self._tail = ""
         self._exit: Optional[Exit] = None
+        self.result: Optional[Dict[str, Any]] = None
+        """How the run ended (an exec's ``ExecExit``), once the stream is over."""
 
     def __iter__(self) -> Iterator[Chunk]:
         while self._exit is None:
@@ -175,6 +187,7 @@ class NativeStream:
                 return
             kind, payload = ev
             if kind == "exit":
+                self.result = payload if isinstance(payload, dict) else None
                 self._exit = _exit_of(payload, self._tail)
                 return
             if kind == "stderr":
@@ -213,6 +226,8 @@ class AsyncNativeStream:
         self.argv = [op]
         self._tail = ""
         self._exit: Optional[Exit] = None
+        self.result: Optional[Dict[str, Any]] = None
+        """How the run ended (an exec's ``ExecExit``), once the stream is over."""
 
     def __aiter__(self) -> AsyncIterator[Chunk]:
         return self._iter()
@@ -225,6 +240,7 @@ class AsyncNativeStream:
                 return
             kind, payload = ev
             if kind == "exit":
+                self.result = payload if isinstance(payload, dict) else None
                 self._exit = _exit_of(payload, self._tail)
                 return
             if kind == "stderr":
@@ -255,7 +271,7 @@ class AsyncNativeStream:
 
 
 def _fwd_exit(r: Dict[str, Any]) -> Exit:
-    return Exit(r.get("exit") if isinstance(r.get("exit"), int) else 0, r.get("error") or "")
+    return Exit(r.get("exit") if isinstance(r.get("exit"), int) else 0, _error_text(r))
 
 
 class NativeForward:

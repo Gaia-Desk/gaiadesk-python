@@ -20,6 +20,8 @@ def _shape(shape: Mapping[str, Any]) -> Dict[str, Any]:
             s[k] = A.duration(shape[k], flag)
     if shape.get("verbose"):
         s["verbose"] = True
+    if shape.get("cwd") is not None:
+        s["cwd"] = A.check_cwd(shape["cwd"])
     return s
 
 
@@ -70,7 +72,10 @@ def run_job(desk_id: str, name: str, command: Any, limits: Mapping[str, Any]) ->
         lim["mem_mb"] = mem_mb(limits["mem"])
     if limits.get("keep_awake") is not None:
         lim["keep_awake"] = limits["keep_awake"]
-    return dict(desk(desk_id), name=name, command=_cmd(command), limits=lim)
+    a = dict(desk(desk_id), name=name, command=_cmd(command), limits=lim)
+    if limits.get("cwd") is not None:
+        a["cwd"] = A.check_cwd(limits["cwd"])
+    return a
 
 
 def job(desk_id: str, name: str) -> Dict[str, Any]:

@@ -15,8 +15,9 @@ desk = sys.argv[1]
 gd = GaiaDesk()
 name = "nightly-%d" % int(time.time())
 
-# An argument list (see README "Known gaps": run re-quotes a single command line).
-job = gd.run_job(desk, name, ["sh", "-c", "cd ~/src/app && make test"], priority="low", cpu=50, mem="4G", keep_awake=True)
+# cwd: where it starts on the desk (relative: from the desk user's home). Needs
+# gaiadesk-cli 0.10.324+; an older one raises UsageError rather than run it elsewhere.
+job = gd.run_job(desk, name, ["make", "test"], cwd="src/app", priority="low", cpu=50, mem="4G", keep_awake=True)
 print("started %s (pid %s); caps enforced as: %s" % (job["name"], job.get("pid"), job.get("enforcement", [])))
 
 # Poll instead of following:

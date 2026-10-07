@@ -1,8 +1,6 @@
 """The asyncio client against the fake gaiadesk-cli."""
 
 import asyncio
-import os
-import tempfile
 import unittest
 
 import helpers
@@ -34,7 +32,7 @@ class AsyncClientTest(unittest.TestCase):
     def test_ops(self):
         async def go():
             gd, _ = helpers.setup(AsyncGaiaDesk, code="pw")
-            self.assertEqual(await gd.version(), "gaiadesk-cli 0.1.0")
+            self.assertEqual(await gd.version(), "gaiadesk-cli 0.10.324")
             self.assertEqual(len((await gd.devices())["devices"]), 2)
             self.assertEqual((await gd.upload("dist", OK, "x/", recursive=True))["dirs"], 1)
             self.assertEqual((await gd.run_job(OK, "build", "make"))["name"], "build")
@@ -75,19 +73,17 @@ class AsyncClientTest(unittest.TestCase):
         async def go():
             gd, _ = helpers.setup(AsyncGaiaDesk)
             async with await gd.mcp(audit_dir="/tmp/a") as m:
-                tools, r = await asyncio.gather(m.list_tools(), m.call_tool("gaiadesk.exec", {"desk_id": OK, "command": "hostname"}))
+                tools, r = await asyncio.gather(m.list_tools(), m.call_tool("gaiadesk_exec", {"desk_id": OK, "command": "hostname"}))
                 self.assertEqual(len(tools), 2)
                 self.assertEqual(tool_text(r), "exit 0")
                 with self.assertRaises(McpError):
-                    await m.call_tool("gaiadesk.nope")
+                    await m.call_tool("gaiadesk_nope")
 
         self.run_async(go())
 
     def test_mcp_tool_name_spellings(self):
         async def go():
-            env = helpers.base_env(os.path.join(tempfile.mkdtemp(prefix="gaiadesk-sdk-"), "calls.jsonl"))
-            env["FAKE_TOOL_STYLE"] = "underscore"
-            gd, _ = helpers.setup(AsyncGaiaDesk, env=env)
+            gd, _ = helpers.setup(AsyncGaiaDesk, old=True)  # dotted names
             async with await gd.mcp() as m:
                 a, b = await asyncio.gather(
                     m.call_tool("gaiadesk.exec", {"desk_id": OK, "command": "hostname"}),

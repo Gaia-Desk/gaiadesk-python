@@ -1,5 +1,5 @@
 """The native backend against a REAL gaiadesk_native build: its test backend
-(fake desks with the same ids as fake_cli.py) behind the real extension.
+(fake desks of its own) behind the real extension.
 Skipped unless gaiadesk_native is installed AND is that test build
 (``build_info()["backend"] == "stub"``; a release build talks to real desks)."""
 
@@ -19,7 +19,16 @@ try:
 except Exception:  # not installed, or no binary for this machine
     STUB = False
 
-OK = "100000001"
+
+
+def stub_desk(n):
+    """The fake desks of gaiadesk_native's test build (its stub backend fixes
+    them as 10000000<n>; no real desk has such an id): 1 fine, 2 offline,
+    3 refuses, 4 a usage error, 5 drops the connection."""
+    return "10000000%d" % n
+
+
+OK, OFFLINE, REFUSED, USAGE = stub_desk(1), stub_desk(2), stub_desk(3), stub_desk(4)
 
 
 def gd(**kw):
@@ -41,13 +50,13 @@ class RealNative(unittest.TestCase):
     def test_errors(self):
         g = gd()
         with self.assertRaises(UnreachableError) as c:
-            g.exec("100000002", "x")
+            g.exec(OFFLINE, "x")
         self.assertEqual(c.exception.kind, "offline")
         with self.assertRaises(RefusedError) as c:
-            g.exec("100000003", "x")
+            g.exec(REFUSED, "x")
         self.assertEqual(c.exception.exit_code, 254)
         with self.assertRaises(UsageError):
-            g.exec("100000004", "x")
+            g.exec(USAGE, "x")
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "a.txt"), "w") as f:
                 f.write("hello")

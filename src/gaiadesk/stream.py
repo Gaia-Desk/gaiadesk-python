@@ -9,7 +9,8 @@ import signal as _signal
 import subprocess
 import sys
 import threading
-from typing import AsyncIterator, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple
+import json
+from typing import Any, AsyncIterator, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from ._core import not_found
 
@@ -55,6 +56,8 @@ class CliStream:
         keep_stdin_open: bool = False,
     ) -> None:
         self.argv = list(command)
+        self.result: Optional[Dict[str, Any]] = None
+        """How the command ended, as JSON: only an ``exec --json-stream`` stream has it."""
         try:
             self._proc = subprocess.Popen(
                 list(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd
@@ -144,6 +147,7 @@ class AsyncCliStream:
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._tasks: List["asyncio.Task[None]"] = []
         self.argv: List[str] = []
+        self.result: Optional[Dict[str, Any]] = None
 
     @classmethod
     async def start(
@@ -232,3 +236,152 @@ class AsyncCliStream:
         for t in pending:
             t.cancel()
         return Exit(code, _last_line(self._tail))
+
+
+# ───────────────────────────── exec --json-stream ─────────────────────────────
+
+
+class _Events:
+    """Turns ``exec --json-stream``'s lines into Chunks; keeps the last ``exit``/``error`` event."""
+
+    def __init__(self) -> None:
+        self._dec = codecs.getincrementaldecoder("utf-8")("replace")
+        self._buf = ""
+        self.result: Optional[Dict[str, Any]] = None
+
+    def feed(self, data: bytes, final: bool = False) -> List[Chunk]:
+        self._buf += self._dec.decode(data, final)
+        out: List[Chunk] = []
+        while "\n" in self._buf or (final and self._buf.strip()):
+            if "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+            else:
+                line, self._buf = self._buf, ""
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(ev, dict):
+                continue
+            kind = ev.get("event")
+            if kind in ("stdout", "stderr") and isinstance(ev.get("data"), str):
+                out.append(Chunk(kind, ev["data"].encode("utf-8")))
+            elif kind in ("exit", "error"):
+                self.result = ev
+        return out
+
+
+def _error_message(result: Optional[Dict[str, Any]]) -> str:
+    e = result.get("error") if result else None
+    if isinstance(e, dict) and isinstance(e.get("message"), str):
+        return e["message"]
+    return ""
+
+
+class JsonExecStream:
+    """``exec --json-stream`` with ``CliStream``'s shape: ``Chunk``s of the
+    command's stdout and stderr (UTF-8 text: bytes that are not UTF-8 arrive
+    replaced), ``wait()`` for the ``Exit``, and ``result``: the last event,
+    ``{"event": "exit", ...ExecExit}`` or ``{"event": "error", "exit", "error"}``.
+    gaiadesk-cli's own lines on stderr are not chunks; the last one is
+    ``Exit.stderr_tail`` (or the error's message)."""
+
+    def __init__(self, raw: CliStream) -> None:
+        self._raw = raw
+        self.argv = raw.argv
+        self._events = _Events()
+        self._pending: List[Chunk] = []
+        self._done = False
+
+    @property
+    def result(self) -> Optional[Dict[str, Any]]:
+        return self._events.result
+
+    def _pull(self) -> Iterator[Chunk]:
+        for c in self._raw:
+            if c.stream == "stdout":
+                for x in self._events.feed(c.data):
+                    yield x
+        for x in self._events.feed(b"", True):
+            yield x
+        self._done = True
+
+    def __iter__(self) -> Iterator[Chunk]:
+        while self._pending:
+            yield self._pending.pop(0)
+        if not self._done:
+            for c in self._pull():
+                yield c
+
+    def text(self) -> Iterator[Tuple[str, str]]:
+        """``(stream, text)`` pairs."""
+        for c in self:
+            yield c.stream, c.data.decode("utf-8", "replace")
+
+    def write(self, data: Union[str, bytes]) -> None:
+        self._raw.write(data)
+
+    def end(self) -> None:
+        self._raw.end()
+
+    def kill(self) -> None:
+        self._raw.kill()
+
+    def wait(self, timeout: Optional[float] = None) -> Exit:
+        e = self._raw.wait(timeout)
+        if not self._done:  # keep what was not read yet for a later iteration
+            self._pending.extend(self._pull())
+        return Exit(e.exit_code, _error_message(self.result) or e.stderr_tail)
+
+
+class AsyncJsonExecStream:
+    """``JsonExecStream`` for asyncio (``AsyncCliStream``'s shape)."""
+
+    def __init__(self, raw: AsyncCliStream) -> None:
+        self._raw = raw
+        self.argv = raw.argv
+        self._events = _Events()
+        self._pending: List[Chunk] = []
+        self._done = False
+
+    @property
+    def result(self) -> Optional[Dict[str, Any]]:
+        return self._events.result
+
+    async def _pull(self) -> AsyncIterator[Chunk]:
+        async for c in self._raw:
+            if c.stream == "stdout":
+                for x in self._events.feed(c.data):
+                    yield x
+        for x in self._events.feed(b"", True):
+            yield x
+        self._done = True
+
+    def __aiter__(self) -> AsyncIterator[Chunk]:
+        return self._iter()
+
+    async def _iter(self) -> AsyncIterator[Chunk]:
+        while self._pending:
+            yield self._pending.pop(0)
+        if not self._done:
+            async for c in self._pull():
+                yield c
+
+    async def text(self) -> AsyncIterator[Tuple[str, str]]:
+        async for c in self:
+            yield c.stream, c.data.decode("utf-8", "replace")
+
+    async def write(self, data: Union[str, bytes]) -> None:
+        await self._raw.write(data)
+
+    def end(self) -> None:
+        self._raw.end()
+
+    def kill(self) -> None:
+        self._raw.kill()
+
+    async def wait(self) -> Exit:
+        e = await self._raw.wait()
+        if not self._done:
+            self._pending.extend([c async for c in self._pull()])
+        return Exit(e.exit_code, _error_message(self.result) or e.stderr_tail)

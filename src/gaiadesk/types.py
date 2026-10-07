@@ -1,165 +1,74 @@
 """The JSON gaiadesk-cli prints with ``--json``, field for field (TypedDicts).
 
-Field names are the CLI's own, so these read the same as
-``gaiadesk-cli <command> --help`` and https://gaiadesk.net/docs/cli-for-agents.
+Every shape of the CLI's own is GENERATED from its JSON Schema
+(``gaiadesk-cli schema --json``) into ``types_generated.py`` and re-exported
+here: ``ExecResult``, ``ExecExit``, ``ExecEvent``, ``Error``,
+``ErrorEnvelope``, ``Job``, ``JobList``, ``TokenList``, ``AuditLog``,
+``VersionInfo``, ... The names this SDK used before are aliases of them
+(``JobInfo`` is ``Job``, ``CpSummary`` is ``CopyResult``, ...). Only the
+SDK's own shapes are written by hand below.
+
 Results are plain dicts; these types are for editors and type checkers.
+Before Python 3.11 this module needs ``typing_extensions`` (a dependency of
+the package there); the client itself does not import it.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Union
 
-from typing import Literal, TypedDict
+from typing import TypedDict
 
-Shell = Literal["default", "none", "sh", "cmd", "pwsh"]
+from .types_generated import *  # noqa: F401,F403
+from .types_generated import (
+    CopyFailure,
+    CopyResult,
+    Device,
+    DeviceList,
+    ExecEvent_Error,
+    ExecEvent_Note,
+    ExecEvent_Stderr,
+    ExecEvent_Stdout,
+    ExecExit,
+    Job,
+    Measurement,
+)
 
+# ── The SDK's earlier names for the CLI's shapes ──
 
-class ExecResult(TypedDict):
-    """``exec --json`` / ``shell --json``: {exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}."""
-
-    exit: int
-    remote_code: Optional[int]
-    stdout: str
-    stderr: str
-    duration_ms: int
-    desk: str
-    route: Optional[str]
-    mode: Optional[str]
-    shell: Optional[str]
-    timed_out: bool
-    error: Optional[str]
-    notes: List[str]
-    truncated: bool
-
-
-class ReachSuccess(TypedDict, total=False):
-    at: int
-    route: str
-    connect_ms: int
-    rtt_ms: int
-
-
-class ReachFailure(TypedDict):
-    at: int
-    kind: str
-    message: str
+DeviceRow = Device
+"""One row of ``devices --json``."""
+DevicesResult = DeviceList
+"""``devices --json``."""
+CpFailure = CopyFailure
+CpSummary = CopyResult
+"""``cp --json``."""
+JobInfo = Job
+"""A background job (``run``, ``kill``, an entry of ``ps``)."""
+# ``stats()`` returns ``StatsReport``; ``DeskStats`` (generated) is the same without ``desk``.
+MeasureResult = Measurement
+"""``measure --json``."""
 
 
-class DeviceRow(TypedDict, total=False):
-    desk_id: str
-    name: Optional[str]
-    online: Optional[bool]
-    os: Optional[str]
-    app_version: Optional[str]
-    owner: Optional[str]
-    last_seen: Optional[int]
-    sources: List[str]
-    signal_idle_secs: int
-    anytime: bool
-    last_ok: Optional[ReachSuccess]
-    last_failure: Optional[ReachFailure]
-    reachable: Optional[bool]
-    probe: Dict[str, Any]
+# ── The SDK's own shapes ──
 
 
-class DevicesResult(TypedDict):
-    devices: List[DeviceRow]
-    sources: List[str]
-    notes: List[str]
+class ExecEvent_Exit(ExecExit):
+    """The last line of ``exec --json-stream`` for a run that started:
+    ``ExecExit`` with ``"event": "exit"`` (the generated ``ExecEvent`` names
+    this variant ``ExecExit``, without its ``event`` tag)."""
+
+    event: Literal["exit"]
 
 
-class CpFailure(TypedDict):
-    path: str
-    message: str
-
-
-class CpSummary(TypedDict):
-    direction: str
-    desk: str
-    destination: str
-    files: int
-    dirs: int
-    bytes: int
-    resumed_bytes: int
-    failed: List[CpFailure]
-    seconds: float
-
-
-class JobInfo(TypedDict, total=False):
-    name: str
-    command: str
-    state: str
-    pid: int
-    exit_code: int
-    started_at_ms: int
-    ended_at_ms: int
-    log_bytes: int
-    by: str
-    limits: Dict[str, Any]
-    enforcement: List[str]
-
-
-class DeskStats(TypedDict):
-    desk: str
-    hostname: str
-    os: str
-    os_version: str
-    cpu_percent: float
-    cpus: int
-    load: Optional[List[float]]
-    mem_total_mb: int
-    mem_free_mb: int
-    disks: List[Dict[str, Any]]
-    uptime_secs: int
-    jobs_running: int
-
-
-class MeasureResult(TypedDict):
-    desk: str
-    sent: int
-    rtt_ms: Optional[Dict[str, float]]
-    clock_offset_ms: Optional[float]
-    clock_uncertainty_ms: Optional[float]
-
-
-class TokenInfo(TypedDict, total=False):
-    label: str
-    id: str
-    scopes: List[str]
-    issued_at_ms: int
-    expires_at_ms: int
-    revoked: bool
-    last_used_ms: int
-    cwd: str
-    low_priv: bool
+ExecStreamEvent = Union[ExecEvent_Stdout, ExecEvent_Stderr, ExecEvent_Note, ExecEvent_Exit, ExecEvent_Error]
+"""One line of ``exec --json-stream`` (``note`` never reaches the CLI's stdout)."""
 
 
 class TokenCreateResult(TypedDict, total=False):
+    """``token create --json``: ``tokens`` (each with its ``secret``), or with
+    ``out`` the entries without it and the ``file`` they were written to.
+    (The ``--out`` form is not in the CLI's schema.)"""
+
     tokens: List[Dict[str, Any]]
     file: str
-
-
-class AuditEvent(TypedDict, total=False):
-    at_ms: int
-    desk: str
-    token: str
-    token_id: str
-    action: str
-    detail: str
-    bytes: int
-    cwd: str
-    exit_code: int
-    duration_ms: int
-
-
-class MeshStatus(TypedDict):
-    self: Optional[Dict[str, Any]]
-    peers: List[Dict[str, Any]]
-
-
-class ForwardListening(TypedDict):
-    event: str
-    local_port: int
-    desk: str
-    remote_host: str
-    remote_port: int

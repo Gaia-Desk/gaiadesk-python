@@ -12,22 +12,25 @@ from __future__ import annotations
 import json as _json
 import os
 import sys
+import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Union
+from typing import Any, Callable, Dict, FrozenSet, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import _args as A
 from . import _native as N
 from .errors import (
     CliNotFoundError,
-    CommandError,
     GaiaDeskError,
     ProtocolError,
-    RefusedError,
     UsageError,
     error_envelope,
     error_from_run,
-    last_stderr_line,
+    exec_outcome,
 )
+
+FEATURE_EXEC_CWD = "exec_cwd"
+FEATURE_RUN_CWD = "run_cwd"
+FEATURE_EXEC_JSON_STREAM = "exec_json_stream"
 
 DOWNLOAD_URL = "https://gaiadesk.net/download"
 
@@ -46,6 +49,8 @@ class Plan(NamedTuple):
     input: Optional[bytes]
     finish: Callable[[Completed], Any]
     native: Optional[N.NativeReq] = None
+    requires: Tuple[Tuple[str, str], ...] = ()
+    """``(feature, what)`` pairs the CLI must list in ``--version --json`` for this run (CLI backend only)."""
 
 
 def _b(data: Union[None, str, bytes]) -> Optional[bytes]:
@@ -118,6 +123,76 @@ def not_found(program: str, args: Sequence[str]) -> GaiaDeskError:
     )
 
 
+# ───────────────────────────── feature detection ─────────────────────────────
+
+VERSION_JSON_ARGS = ["--version", "--json"]
+
+_features_lock = threading.Lock()
+_features_cache: Dict[Tuple[Any, ...], Optional[Dict[str, Any]]] = {}
+
+
+def features_key(cli: Sequence[str]) -> Tuple[Any, ...]:
+    """The cache key for one CLI: its command vector, and the program file's
+    size and mtime (an upgraded CLI is asked again)."""
+    stamp: Tuple[Any, ...] = ()
+    for part in cli:
+        try:
+            st = os.stat(part)
+        except (OSError, ValueError):
+            continue
+        stamp += (part, st.st_size, st.st_mtime_ns)
+    return (tuple(cli),) + stamp
+
+
+def cached_version_info(key: Tuple[Any, ...]) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    with _features_lock:
+        if key in _features_cache:
+            return True, _features_cache[key]
+        return False, None
+
+
+def store_version_info(key: Tuple[Any, ...], info: Optional[Dict[str, Any]]) -> None:
+    with _features_lock:
+        _features_cache[key] = info
+
+
+def clear_feature_cache() -> None:
+    """Forget what every CLI said it can do (they are asked again on next use)."""
+    with _features_lock:
+        _features_cache.clear()
+
+
+def version_info_from(done: Completed) -> Optional[Dict[str, Any]]:
+    """``--version --json``'s VersionInfo, or None from a CLI before 0.10.324
+    (it prints its version as text, or fails on the flag): no features."""
+    if done.code != 0:
+        return None
+    v = parse_json(done.stdout)
+    if not isinstance(v, dict) or not isinstance(v.get("features"), list):
+        return None
+    return v
+
+
+def features_of(info: Optional[Mapping[str, Any]]) -> FrozenSet[str]:
+    if not info:
+        return frozenset()
+    return frozenset(f for f in info.get("features", []) if isinstance(f, str))
+
+
+def missing_feature(have: FrozenSet[str], requires: Sequence[Tuple[str, str]], info: Optional[Mapping[str, Any]]) -> Optional[GaiaDeskError]:
+    """A UsageError for the first required feature this CLI lacks (never run without it)."""
+    for feature, what in requires:
+        if feature not in have:
+            ver = info.get("version") if info else None
+            return UsageError(
+                "%s needs a newer gaiadesk-cli (0.10.324 or later: its `--version --json` lists %r; this one is %s). "
+                "Update GaiaDesk from %s, or leave %s out." % (what, feature, ver or "older", DOWNLOAD_URL, what),
+                kind="usage",
+                argv=VERSION_JSON_ARGS,
+            )
+    return None
+
+
 # ───────────────────────────── parsing ─────────────────────────────
 
 
@@ -158,21 +233,27 @@ def exec_finish(args: Sequence[str], check: bool) -> Callable[[Completed], Any]:
             if done.code != 0:
                 raise failure(done, args, r)
             raise ProtocolError("gaiadesk-cli printed no exec JSON", exit_code=done.code, stderr=done.stderr, argv=args, kind="protocol")
-        details: Dict[str, Any] = dict(exit_code=done.code, stderr=done.stderr, argv=args, json=r)
-        env = error_envelope(r)
-        # A failure before the command ran: an envelope with a kind.
-        if env is not None and env.kind is not None:
-            raise failure(done, args, r)
-        # The desk refused the command itself (e.g. a token without `exec`): exit 254, it never ran.
-        if r["exit"] == 254 and r.get("remote_code") in (-1, None):
-            details["kind"] = "refused"
-            raise RefusedError((env.message if env else "") or last_stderr_line(done.stderr) or "the desk refused the command", **details)
-        if check and r["exit"] != 0:
-            why = "timed out" if r.get("timed_out") else "exited %d" % r["exit"]
-            raise CommandError("command on desk %s %s" % (r.get("desk"), why), r, **details)
-        return r
+        return exec_outcome(r, check, done.code, done.stderr, args)
 
     return finish
+
+
+def unwrap_list(key: str, args: Sequence[str]) -> Callable[[Any], Any]:
+    """``{"<key>": [...]}`` (0.10.324+) or a bare array (older): the list."""
+
+    def unwrap(v: Any) -> Any:
+        if isinstance(v, dict) and isinstance(v.get(key), list):
+            return v[key]
+        if isinstance(v, list):
+            return v
+        raise ProtocolError("gaiadesk-cli printed neither {%r: [...]} nor a list" % key, kind="protocol", argv=args, json=v)
+
+    return unwrap
+
+
+def list_finish(args: Sequence[str], key: str) -> Callable[[Completed], Any]:
+    inner, unwrap = op_finish(args), unwrap_list(key, args)
+    return lambda done: unwrap(inner(done))
 
 
 def text_finish(args: Sequence[str], strip: bool = False) -> Callable[[Completed], Any]:
@@ -292,6 +373,11 @@ class Base:
         """Which backend runs the operations: ``native`` (gaiadesk_native) or ``cli`` (gaiadesk-cli)."""
         return "native" if self._nat() is not None else "cli"
 
+    # What the CLI can do (``--version --json``), asked once per CLI.
+
+    def _features_key(self) -> Tuple[Any, ...]:
+        return features_key(self.cli)
+
     # The plans. Public methods in client.py / aio.py run these.
 
     def _p_version(self) -> Plan:
@@ -303,8 +389,9 @@ class Base:
 
     def _p_exec(self, desk_id: str, command: A.Command, stdin: Union[None, str, bytes], check: bool, shape: Dict[str, Any]) -> Plan:
         a = A.exec_args(desk_id, command, stdin=stdin is not None, json=True, **shape)
+        req = ((FEATURE_EXEC_CWD, "exec(cwd=...)"),) if shape.get("cwd") is not None else ()
         return Plan(a, _b(stdin), exec_finish(a, check),
-                    N.NativeReq("exec", N.exec_(desk_id, command, shape), _b(stdin), N.exec_finish("exec", check)))
+                    N.NativeReq("exec", N.exec_(desk_id, command, shape), _b(stdin), N.exec_finish("exec", check)), req)
 
     def _p_shell(self, desk_id: str, script: str, check: bool, shape: Dict[str, Any]) -> Plan:
         a = A.shell_args(desk_id, json=True, **shape)
@@ -326,22 +413,29 @@ class Base:
         return Plan(a, None, none_finish(a), native)
 
     def _p_mesh_ip(self, desk_id: str) -> Plan:
-        return self._p_text(["mesh", "ip", A.check_desk(desk_id)], strip=True, native=N.NativeReq("mesh_ip", N.desk(desk_id)))
+        return self._p_text(["mesh", "ip", A.check_desk(desk_id)], strip=True,
+                            native=N.NativeReq("mesh_ip", N.desk(desk_id), None, N.field_finish("mesh_ip")))
 
     def _p_mesh_status(self) -> Plan:
         return self._p_op(["mesh", "status", "--json"], native=N.NativeReq("mesh_status", {}))
 
     def _p_run_job(self, desk_id: str, name: str, command: A.Command, limits: Dict[str, Any]) -> Plan:
-        return self._p_op(A.run_args(desk_id, name, command, **limits), native=N.NativeReq("job_run", N.run_job(desk_id, name, command, limits)))
+        a = A.run_args(desk_id, name, command, **limits)
+        req = ((FEATURE_RUN_CWD, "run_job(cwd=...)"),) if limits.get("cwd") is not None else ()
+        return Plan(a, None, op_finish(a), N.NativeReq("job_run", N.run_job(desk_id, name, command, limits)), req)
+
+    def _p_list(self, a: List[str], key: str, op: str, nargs: Dict[str, Any]) -> Plan:
+        """``ps`` / ``token list`` / ``audit``: ``{"<key>": [...]}`` from 0.10.324, a bare array before; the list either way."""
+        return Plan(a, None, list_finish(a, key), N.NativeReq(op, nargs, None, unwrap_list(key, [op])))
 
     def _p_jobs(self, desk_id: str) -> Plan:
-        return self._p_op(A.ps_args(desk_id), native=N.NativeReq("job_list", N.desk(desk_id)))
+        return self._p_list(A.ps_args(desk_id), "jobs", "job_list", N.desk(desk_id))
 
     def _p_kill_job(self, desk_id: str, name: str) -> Plan:
         return self._p_op(A.kill_args(desk_id, name), native=N.NativeReq("job_kill", N.job(desk_id, name)))
 
     def _p_job_logs(self, desk_id: str, name: str, tail: Optional[int]) -> Plan:
-        return self._p_text(A.logs_args(desk_id, name, tail), native=N.NativeReq("job_logs", N.logs(desk_id, name, tail)))
+        return self._p_text(A.logs_args(desk_id, name, tail), native=N.NativeReq("job_logs", N.logs(desk_id, name, tail), None, N.field_finish("output")))
 
     def _p_stats(self, desk_id: str) -> Plan:
         return self._p_op(A.stats_args(desk_id), native=N.NativeReq("stats", N.desk(desk_id)))
@@ -353,14 +447,14 @@ class Base:
         return self._p_op(A.token_create_args(desks, **spec), native=N.NativeReq("token_mint", N.token_create(desks, spec)))
 
     def _p_list_tokens(self, desk_id: str) -> Plan:
-        return self._p_op(A.token_list_args(desk_id), native=N.NativeReq("token_list", N.desk(desk_id)))
+        return self._p_list(A.token_list_args(desk_id), "tokens", "token_list", N.desk(desk_id))
 
     def _p_revoke_token(self, desk_id: str, name: Optional[str], all_for_desk: bool, account: bool) -> Plan:
         return self._p_op(A.token_revoke_args(desk_id, name, all_for_desk, account),
                           native=N.NativeReq("token_revoke", N.token_revoke(desk_id, name, all_for_desk, account)))
 
     def _p_audit(self, desk_id: str, token: Optional[str], limit: Optional[int], account: bool) -> Plan:
-        return self._p_op(A.audit_args(desk_id, token, limit, account), native=N.NativeReq("audit", N.audit(desk_id, token, limit, account)))
+        return self._p_list(A.audit_args(desk_id, token, limit, account), "events", "audit", N.audit(desk_id, token, limit, account))
 
     def _p_disconnect(self, desk_id: Optional[str]) -> Plan:
         return self._p_none(A.disconnect_args(desk_id), native=N.NativeReq("disconnect", {} if desk_id is None else N.desk(desk_id), None, N.none_finish))

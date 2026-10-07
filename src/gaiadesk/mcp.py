@@ -1,10 +1,14 @@
 """A minimal MCP client for ``gaiadesk-cli mcp`` over stdio: how the SDK
-reaches the SCREEN tools (open_session, screenshot, click, ...), which
-gaiadesk-cli exposes only through its MCP server.
+reaches the SCREEN tools (``gaiadesk_open_session``, ``gaiadesk_screenshot``,
+``gaiadesk_click``, ...), which gaiadesk-cli exposes only through its MCP server.
 
-gaiadesk-cli mcp speaks the stateless MCP revision 2026-07-28: no
-``initialize``; every request carries the protocol version and client
-capabilities in ``params._meta``.
+The client speaks the stateless MCP revision 2026-07-28: no ``initialize``;
+every request carries the protocol version and client capabilities in
+``params._meta``. Every gaiadesk-cli with an MCP server takes it; from
+0.10.324 the server also speaks the standard ``initialize`` lifecycle.
+
+Tool names are ``gaiadesk_<tool>`` from 0.10.324 (before: ``gaiadesk.<tool>``);
+``call_tool`` takes either and sends the one the server lists.
 """
 
 from __future__ import annotations
@@ -40,10 +44,11 @@ _meta = with_protocol_meta
 
 
 def tool_name_alias(name: str) -> Optional[str]:
-    """The other spelling of a GaiaDesk tool name: ``gaiadesk.exec`` <-> ``gaiadesk_exec``.
+    """The other spelling of a GaiaDesk tool name: ``gaiadesk_exec`` <-> ``gaiadesk.exec``.
 
-    (Some model providers allow only ``[A-Za-z0-9_-]`` in function names.)
-    None for a name that is not a GaiaDesk tool.
+    ``gaiadesk_exec`` is the name from gaiadesk-cli 0.10.324 (and the one
+    model providers accept, ``[A-Za-z0-9_-]``); ``gaiadesk.exec`` the name
+    before. None for a name that is not a GaiaDesk tool.
     """
     m = re.match(r"^gaiadesk([._])(.+)$", name)
     if not m:
@@ -67,7 +72,7 @@ def tool_text(result: Dict[str, Any]) -> str:
 
 
 def tool_image(result: Dict[str, Any]) -> Optional[Dict[str, str]]:
-    """The first image (``gaiadesk.screenshot``): ``{"mime_type", "base64"}``."""
+    """The first image (``gaiadesk_screenshot``): ``{"mime_type", "base64"}``."""
     for c in result.get("content", []):
         if c.get("type") == "image":
             return {"mime_type": c.get("mimeType", ""), "base64": c.get("data", "")}
@@ -133,14 +138,15 @@ class McpClient:
 
     def list_tools(self) -> List[Dict[str, Any]]:
         tools = self.request("tools/list").get("tools", [])
-        self._tool_names = {t.get("name") for t in tools if isinstance(t, dict)}
+        self._tool_names = {t["name"] for t in tools if isinstance(t, dict) and isinstance(t.get("name"), str)}
         return tools
 
     def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """A tool-level failure is a result with ``isError: True``; protocol errors raise McpError.
 
-        ``name`` may be spelled ``gaiadesk.exec`` or ``gaiadesk_exec``: the
-        client sends the spelling the server advertises (it fetches the tool
+        ``name`` may be spelled ``gaiadesk_exec`` (preferred: the name from
+        0.10.324) or ``gaiadesk.exec`` (older servers): the client sends the
+        spelling the server advertises (it fetches the tool
         list once if ``list_tools()`` has not been called).
         """
         if self._tool_names is None and tool_name_alias(name) is not None:
@@ -249,7 +255,7 @@ class AsyncMcpClient:
 
     async def list_tools(self) -> List[Dict[str, Any]]:
         tools = (await self.request("tools/list")).get("tools", [])
-        self._tool_names = {t.get("name") for t in tools if isinstance(t, dict)}
+        self._tool_names = {t["name"] for t in tools if isinstance(t, dict) and isinstance(t.get("name"), str)}
         return tools
 
     async def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

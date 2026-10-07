@@ -9,7 +9,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "src"))
 
 FAKE = os.path.join(HERE, "fixtures", "fake_cli.py")
-OK, OFFLINE, REFUSED, USAGE, PLAIN = "100000001", "100000002", "100000003", "100000004", "100000005"
+FAKE_OLD = os.path.join(HERE, "fixtures", "fake_cli_old.py")  # a gaiadesk-cli from before 0.10.324
+OK, OFFLINE, REFUSED, USAGE, PLAIN = "123456789", "234567890", "345678901", "desk-usage", "desk-plain"
 
 
 def base_env(log):
@@ -20,13 +21,13 @@ def base_env(log):
     return env
 
 
-def setup(cls, **opts):
-    """A client of class `cls` on the fake CLI, and a function returning the calls it made."""
+def setup(cls, old=False, **opts):
+    """A client of class `cls` on the fake CLI (`old`: one from before 0.10.324), and a function returning the calls it made."""
     d = tempfile.mkdtemp(prefix="gaiadesk-sdk-")
     log = os.path.join(d, "calls.jsonl")
     env = opts.pop("env", None) or base_env(log)
     env.setdefault("FAKE_LOG", log)
-    client = cls(cli=[sys.executable, FAKE], env=env, **opts)
+    client = cls(cli=[sys.executable, FAKE_OLD if old else FAKE], env=env, **opts)
 
     def calls():
         if not os.path.exists(log):
@@ -35,3 +36,8 @@ def setup(cls, **opts):
             return [json.loads(l) for l in f if l.strip()]
 
     return client, calls
+
+
+def desk_calls(calls):
+    """The calls that were not the SDK asking the CLI what it can do (``--version --json``)."""
+    return [c for c in calls() if c["argv"] != ["--version", "--json"]]

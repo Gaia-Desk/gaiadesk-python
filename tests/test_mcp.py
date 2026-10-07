@@ -27,6 +27,17 @@ class McpHelpersTest(unittest.TestCase):
         self.assertIsNone(tool_name_alias("other.exec"))
         self.assertIsNone(tool_name_alias("gaiadesk"))
 
+    def test_the_names_from_0_10_324(self):
+        # gaiadesk-cli mcp's tools (agent/src/agent_access/mcp, client/src/mcp_tools.rs).
+        tools = ["exec", "copy_files", "job_run", "job_list", "job_logs", "job_kill", "forward_start", "forward_stop", "open_session",
+                 "close_session", "screenshot", "click", "drag", "move_pointer", "pointer_position", "press_button", "press_keys",
+                 "hold_keys", "type_text", "scroll", "wait"]
+        for t in tools:
+            name = "gaiadesk_" + t
+            self.assertEqual(tool_name_alias(tool_name_alias(name)), name)
+            self.assertEqual(resolve_tool_name(name), name, "with no list, the name as given")
+            self.assertEqual(resolve_tool_name("gaiadesk." + t, {name}), name)
+
     def test_resolve_tool_name(self):
         dotted = {"gaiadesk.exec", "gaiadesk.job_run"}
         plain = {"gaiadesk_exec", "gaiadesk_job_run"}

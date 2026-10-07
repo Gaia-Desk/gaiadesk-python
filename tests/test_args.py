@@ -16,6 +16,15 @@ class ArgsTest(unittest.TestCase):
         self.assertEqual(A.exec_args("1", ["printf", "%s", "a b"], stdin=True, json=False, shell="none"),
                          ["exec", "--desk-id", "1", "--quiet", "--stdin", "--shell", "none", "--", "printf", "%s", "a b"])
 
+    def test_exec_cwd_and_json_stream(self):
+        self.assertEqual(A.exec_args("1", "make", stdin=False, json=False, json_stream=True, cwd="/srv/app", shell="sh"),
+                         ["exec", "--desk-id", "1", "--quiet", "--json-stream", "--no-stdin", "--cwd", "/srv/app", "--shell", "sh", "--", "make"])
+        with self.assertRaises(UsageError):
+            A.exec_args("1", "x", stdin=False, json=True, json_stream=True)
+        for bad in ("", " ", 3):
+            with self.assertRaises(UsageError):
+                A.exec_args("1", "x", stdin=False, json=True, cwd=bad)
+
     def test_durations(self):
         a = A.exec_args("1", "x", stdin=False, json=True, timeout=1.2, connect_timeout="90s", persist=0, verbose=True)
         self.assertEqual(a[6:-2], ["--timeout", "2", "--connect-timeout", "90s", "--persist", "0", "--verbose"])
@@ -47,6 +56,7 @@ class ArgsTest(unittest.TestCase):
                          ["run", "--detach", "--name", "build", "--desk-id", "234567890", "--priority", "low", "--cpu", "50", "--mem", "4G",
                           "--keep-awake", "--json", "--", "msbuild app.sln /m"])
         self.assertIn("--no-keep-awake", A.run_args("1", "b", ["./build.sh"], keep_awake=False))
+        self.assertEqual(A.run_args("1", "b", "make", cwd="C:\\src"), ["run", "--detach", "--name", "b", "--desk-id", "1", "--cwd", "C:\\src", "--json", "--", "make"])
         for kw in (dict(name="-x"), dict(cpu=0), dict(priority="urgent")):
             name = kw.pop("name", "b")
             with self.assertRaises(UsageError):

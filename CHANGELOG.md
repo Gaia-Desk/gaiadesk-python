@@ -2,6 +2,40 @@
 
 ## 0.1.0 (unreleased)
 
+For `gaiadesk-cli` / `gaiadesk-native` 0.10.324 (older CLIs keep working):
+
+- Types generated from the CLI's JSON Schema (`types_generated.py`, by
+  GaiaDesk's `scripts/gen-sdk-types.mts`): `ExecResult`, `ExecExit`,
+  `ExecEvent`, `Error`, `ErrorEnvelope`, `Job`, `JobList`, `TokenList`,
+  `AuditLog`, `VersionInfo`, ... re-exported from `gaiadesk.types`; the
+  earlier names are aliases (`JobInfo` = `Job`, `CpSummary` = `CopyResult`,
+  `DevicesResult` = `DeviceList`, ...). `stats()` is typed `StatsReport`.
+  New dependency before Python 3.11: `typing_extensions` (only
+  `gaiadesk.types` needs it).
+- The CLI's one error envelope, `{"error": {kind, message, reason?, desk?}}`
+  with the six kinds (`usage`, `refused`, `unreachable`, `connection_lost`,
+  `failed`, `protocol`), read by `error_envelope`; errors gain `.reason` and
+  `.desk`. `kind` stays the finer cause when there is one (`offline`, ...).
+  Older CLIs' shapes are still read.
+- `cwd=` on `exec`, `exec_stream` and `run_job` (`--cwd`; the native
+  library's `cwd`). With a CLI before 0.10.324 it raises `UsageError`
+  instead of running the command elsewhere.
+- `exec_stream` uses `exec --json-stream` when the CLI has it: the same
+  chunks, plus `.result` (the `exit` or `error` event: route, shell, an
+  error's kind). `json_stream=False` keeps the plain byte stream.
+- Feature detection: `cli_version_info()` / `cli_features()`
+  (`--version --json`, cached per CLI; an older CLI has none).
+- `jobs()`, `list_tokens()`, `audit()` read `{"jobs": [...]}` /
+  `{"tokens": [...]}` / `{"events": [...]}` and older bare arrays; on the
+  native backend `job_logs()` and `mesh_ip()` read the library's v2 objects.
+  Both still return what they did.
+- MCP: `gaiadesk_<tool>` names in the docs and docstrings (the dotted names
+  still resolve against older servers).
+- A `check=True` `CommandError` now has `kind == "failed"` on both backends.
+- `gaiadesk[native]` needs `gaiadesk-native>=0.10.324`.
+- Tests run every change against a fake CLI of 0.10.324 and one from
+  before; placeholder desk ids only.
+
 - A native backend: with `gaiadesk-native` installed (`pip install
   gaiadesk[native]`: GaiaDesk's client library as a prebuilt extension),
   every method runs on it instead of spawning `gaiadesk-cli`, sync and

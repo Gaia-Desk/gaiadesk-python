@@ -4,33 +4,51 @@
 from __future__ import annotations
 
 import subprocess
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Sequence, Tuple, Union
 
 from . import _args as A
 from . import _native as N
-from ._core import Base, Completed, Plan, failure, not_found, parse_json
-from .mcp import McpClient
-from .stream import CliStream, Exit
-from .types import (
-    AuditEvent,
-    CpSummary,
-    DeskStats,
-    DeviceRow,
-    DevicesResult,
-    ExecResult,
-    ForwardListening,
-    JobInfo,
-    MeasureResult,
-    MeshStatus,
-    TokenCreateResult,
-    TokenInfo,
+from ._core import (
+    FEATURE_EXEC_CWD,
+    FEATURE_EXEC_JSON_STREAM,
+    VERSION_JSON_ARGS,
+    Base,
+    Completed,
+    Plan,
+    cached_version_info,
+    failure,
+    features_of,
+    missing_feature,
+    not_found,
+    parse_json,
+    store_version_info,
+    version_info_from,
 )
+from .mcp import McpClient
+from .stream import CliStream, Exit, JsonExecStream
+
+if TYPE_CHECKING:  # gaiadesk.types needs typing_extensions before Python 3.11; nothing here needs it at runtime
+    from .types import (
+        AuditEvent,
+        CpSummary,
+        DeviceRow,
+        DevicesResult,
+        ExecResult,
+        ForwardListening,
+        JobInfo,
+        MeasureResult,
+        MeshStatus,
+        StatsReport,
+        TokenCreateResult,
+        TokenInfo,
+        VersionInfo,
+    )
 
 
 class Forward:
     """A running ``gaiadesk-cli forward``. ``listening``: one entry per forward."""
 
-    def __init__(self, stream: CliStream, listening: List[ForwardListening]) -> None:
+    def __init__(self, stream: CliStream, listening: "List[ForwardListening]") -> None:
         self._stream = stream
         self.listening = listening
 
@@ -79,7 +97,15 @@ class GaiaDesk(Base):
         n = self._nat()
         if n is not None and plan.native is not None:
             return n.run_sync(plan.native)
+        self._require(plan.requires)
         return plan.finish(self._complete(plan.args, plan.input))
+
+    def _require(self, requires: Sequence[Tuple[str, str]]) -> None:
+        if requires:
+            info = self.cli_version_info()
+            err = missing_feature(features_of(info), requires, info)
+            if err is not None:
+                raise err
 
     def _complete(self, args: Sequence[str], input: Optional[bytes]) -> Completed:
         cmd = self.cli + list(args)
@@ -100,13 +126,29 @@ class GaiaDesk(Base):
         """``gaiadesk-cli --version``."""
         return self._run(self._p_version())
 
+    def cli_version_info(self) -> "Optional[VersionInfo]":
+        """``gaiadesk-cli --version --json``: ``{name, version, features, json_shapes,
+        mcp_protocol_versions}``, or None from a CLI before 0.10.324 (no features).
+        Asked once per CLI (path, size and mtime) for the whole process. Always the
+        CLI, whichever backend runs the operations."""
+        key = self._features_key()
+        hit, info = cached_version_info(key)
+        if not hit:
+            info = version_info_from(self._complete(VERSION_JSON_ARGS, None))
+            store_version_info(key, info)
+        return info  # type: ignore[return-value]
+
+    def cli_features(self) -> FrozenSet[str]:
+        """What this gaiadesk-cli can do (``exec_json_stream``, ``exec_cwd``, ``run_cwd``, ...); empty for an older CLI."""
+        return features_of(self.cli_version_info())
+
     # devices
 
-    def devices(self, *, probe: bool = False, desk_id: Optional[str] = None) -> DevicesResult:
+    def devices(self, *, probe: bool = False, desk_id: Optional[str] = None) -> "DevicesResult":
         """``devices --json [--probe] [-d id]``. With probe, an unreachable desk has ``reachable: False`` (CLI exit 1, not an error here)."""
         return self._run(self._p_devices(probe, desk_id))
 
-    def probe(self, desk_id: str) -> DeviceRow:
+    def probe(self, desk_id: str) -> "DeviceRow":
         """``devices --probe -d <id>``: is this desk reachable right now?"""
         rows = self.devices(probe=True, desk_id=desk_id)["devices"]
         for r in rows:
@@ -132,14 +174,16 @@ class GaiaDesk(Base):
         connect_timeout: Optional[A.Duration] = None,
         persist: Optional[A.Duration] = None,
         verbose: bool = False,
-    ) -> ExecResult:
+        cwd: Optional[str] = None,
+    ) -> "ExecResult":
         """``exec --json``: run ONE command; its exit code, stdout and stderr.
 
         ``command`` as a str is one command line for the desk's shell; as a list,
         separate arguments. A non-zero exit is a result unless ``check=True``.
-        Raises when the command never ran.
+        Raises when the command never ran. ``cwd``: the directory it starts in on
+        the desk (``--cwd``; gaiadesk-cli 0.10.324+, else a UsageError).
         """
-        shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose)
+        shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose, cwd=cwd)
         return self._run(self._p_exec(desk_id, command, stdin, check, shape))
 
     def exec_stream(
@@ -152,16 +196,35 @@ class GaiaDesk(Base):
         timeout: Optional[A.Duration] = None,
         connect_timeout: Optional[A.Duration] = None,
         persist: Optional[A.Duration] = None,
+        cwd: Optional[str] = None,
+        json_stream: Optional[bool] = None,
     ) -> CliStream:
-        """``exec`` without --json, streaming. ``stdin=True`` keeps stdin open for ``write()``/``end()``."""
-        a = A.exec_args(desk_id, command, stdin=stdin is not None and stdin is not False, json=False,
-                        shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
+        """``exec``, streaming. ``stdin=True`` keeps stdin open for ``write()``/``end()``.
+
+        With a gaiadesk-cli that has ``exec --json-stream`` (0.10.324+) the stream
+        is built from its events: the output as text, and ``result`` (route, shell,
+        an error's kind, ...) at the end. ``json_stream=False`` forces plain
+        ``exec`` (the exact bytes; no ``result``), ``True`` requires the events.
+        Older CLIs: plain ``exec``.
+        """
+        A.exec_args(desk_id, command, stdin=False, json=False, cwd=cwd,
+                    shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)  # validate first
         data = None if stdin is None or isinstance(stdin, bool) else (stdin.encode("utf-8") if isinstance(stdin, str) else stdin)
         n = self._nat()
         if n is not None:
-            shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
+            shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, cwd=cwd)
             return n.stream_sync("exec", N.exec_(desk_id, command, shape), data, stdin is True)  # type: ignore[return-value]
-        return self._stream(a, data, keep_open=stdin is True)
+        need: List[Tuple[str, str]] = []
+        if cwd is not None:
+            need.append((FEATURE_EXEC_CWD, "exec_stream(cwd=...)"))
+        if json_stream:
+            need.append((FEATURE_EXEC_JSON_STREAM, "exec_stream(json_stream=True)"))
+        self._require(need)
+        use_events = json_stream is not False and FEATURE_EXEC_JSON_STREAM in self.cli_features()
+        a = A.exec_args(desk_id, command, stdin=stdin is not None and stdin is not False, json=False, json_stream=use_events,
+                        cwd=cwd, shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
+        s = self._stream(a, data, keep_open=stdin is True)
+        return JsonExecStream(s) if use_events else s  # type: ignore[return-value]
 
     def shell(
         self,
@@ -174,7 +237,7 @@ class GaiaDesk(Base):
         connect_timeout: Optional[A.Duration] = None,
         persist: Optional[A.Duration] = None,
         verbose: bool = False,
-    ) -> ExecResult:
+    ) -> "ExecResult":
         """``shell --json`` with ``script`` on stdin: run in the desk's shell over plain pipes; the script's exit code."""
         shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose)
         return self._run(self._p_shell(desk_id, script, check, shape))
@@ -191,26 +254,28 @@ class GaiaDesk(Base):
 
     # cp
 
-    def upload(self, local: str, desk_id: str, remote: str, *, recursive: bool = False) -> CpSummary:
+    def upload(self, local: str, desk_id: str, remote: str, *, recursive: bool = False) -> "CpSummary":
         """``cp --json <local> <desk>:<remote>``. Raises OperationFailedError (summary in ``.json``) if a file failed."""
         return self._run(self._p_cp("upload", desk_id, local, remote, recursive))
 
-    def download(self, desk_id: str, remote: str, local: str, *, recursive: bool = False) -> CpSummary:
+    def download(self, desk_id: str, remote: str, local: str, *, recursive: bool = False) -> "CpSummary":
         """``cp --json <desk>:<remote> <local>``."""
         return self._run(self._p_cp("download", desk_id, local, remote, recursive))
 
     # jobs
 
     def run_job(self, desk_id: str, name: str, command: A.Command, *, priority: Optional[str] = None,
-                cpu: Optional[int] = None, mem: Union[None, int, str] = None, keep_awake: Optional[bool] = None) -> JobInfo:
-        """``run --detach --json``: a named background job that outlives this connection."""
-        return self._run(self._p_run_job(desk_id, name, command, dict(priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake)))
+                cpu: Optional[int] = None, mem: Union[None, int, str] = None, keep_awake: Optional[bool] = None,
+                cwd: Optional[str] = None) -> "JobInfo":
+        """``run --detach --json``: a named background job that outlives this connection.
+        ``cwd``: the directory it starts in on the desk (``--cwd``; gaiadesk-cli 0.10.324+, else a UsageError)."""
+        return self._run(self._p_run_job(desk_id, name, command, dict(priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake, cwd=cwd)))
 
-    def jobs(self, desk_id: str) -> List[JobInfo]:
-        """``ps --json``."""
+    def jobs(self, desk_id: str) -> "List[JobInfo]":
+        """``ps --json``: the jobs (the CLI's ``{"jobs": [...]}``, or an older CLI's bare array)."""
         return self._run(self._p_jobs(desk_id))
 
-    def kill_job(self, desk_id: str, name: str) -> JobInfo:
+    def kill_job(self, desk_id: str, name: str) -> "JobInfo":
         """``kill --json``: stop a job and everything it started."""
         return self._run(self._p_kill_job(desk_id, name))
 
@@ -228,11 +293,11 @@ class GaiaDesk(Base):
 
     # stats / measure
 
-    def stats(self, desk_id: str) -> DeskStats:
+    def stats(self, desk_id: str) -> "StatsReport":
         """``stats --json``."""
         return self._run(self._p_stats(desk_id))
 
-    def measure(self, desk_id: str, *, count: Optional[int] = None) -> MeasureResult:
+    def measure(self, desk_id: str, *, count: Optional[int] = None) -> "MeasureResult":
         """``measure --json``. ``rtt_ms`` is None if no ping came back (CLI exit 1)."""
         return self._run(self._p_measure(desk_id, count))
 
@@ -240,25 +305,25 @@ class GaiaDesk(Base):
 
     def create_token(self, desks: Union[str, Sequence[str]], *, name: Optional[str] = None, expires: Optional[str] = None,
                      scopes: Optional[Sequence[str]] = None, cwd: Optional[str] = None, low_priv: bool = False,
-                     out: Optional[str] = None) -> TokenCreateResult:
+                     out: Optional[str] = None) -> "TokenCreateResult":
         """``token create --json`` (owner: needs ``code`` = the unattended password). Without ``out`` each entry has the ``secret``."""
         return self._run(self._p_create_token(desks, dict(name=name, expires=expires, scopes=scopes, cwd=cwd, low_priv=low_priv, out=out)))
 
-    def list_tokens(self, desk_id: str) -> List[TokenInfo]:
-        """``token list --json`` (owner only)."""
+    def list_tokens(self, desk_id: str) -> "List[TokenInfo]":
+        """``token list --json`` (owner only): the tokens (``{"tokens": [...]}``, or an older CLI's bare array)."""
         return self._run(self._p_list_tokens(desk_id))
 
     def revoke_token(self, desk_id: str, name: Optional[str] = None, *, all_for_desk: bool = False, account: bool = False) -> Dict[str, Any]:
         """``token revoke --json``: ``{revoked, stopped_sessions}``; with ``account=True`` ``{desk, ok, message}``."""
         return self._run(self._p_revoke_token(desk_id, name, all_for_desk, account))
 
-    def audit(self, desk_id: str, *, token: Optional[str] = None, limit: Optional[int] = None, account: bool = False) -> List[AuditEvent]:
-        """``audit --json``: what agent tokens did on the desk, newest first."""
+    def audit(self, desk_id: str, *, token: Optional[str] = None, limit: Optional[int] = None, account: bool = False) -> "List[AuditEvent]":
+        """``audit --json``: what agent tokens did on the desk, newest first (``{"events": [...]}``, or a bare array)."""
         return self._run(self._p_audit(desk_id, token, limit, account))
 
     # mesh / connections
 
-    def mesh_status(self) -> MeshStatus:
+    def mesh_status(self) -> "MeshStatus":
         """``mesh status --json``."""
         return self._run(self._p_mesh_status())
 
@@ -281,7 +346,7 @@ class GaiaDesk(Base):
         if n is not None:
             return n.forward_sync(N.forward(desk_id, lst))  # type: ignore[return-value]
         s = self._stream(a)
-        listening: List[ForwardListening] = []
+        listening: "List[ForwardListening]" = []
         buf = ""
         stderr = ""
         for c in s:

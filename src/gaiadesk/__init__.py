@@ -27,7 +27,7 @@ from .errors import (
     error_envelope,
 )
 from .mcp import MCP_PROTOCOL_VERSION, AsyncMcpClient, McpClient, resolve_tool_name, tool_image, tool_name_alias, tool_text
-from .stream import AsyncCliStream, Chunk, CliStream, Exit
+from .stream import AsyncCliStream, AsyncJsonExecStream, Chunk, CliStream, Exit, JsonExecStream
 
 __version__ = "0.1.0"
 
@@ -38,6 +38,8 @@ __all__ = [
     "AsyncForward",
     "CliStream",
     "AsyncCliStream",
+    "JsonExecStream",
+    "AsyncJsonExecStream",
     "Chunk",
     "Exit",
     "Completed",

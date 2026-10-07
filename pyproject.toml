@@ -10,7 +10,8 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
-dependencies = []
+# The generated TypedDicts (gaiadesk.types) use NotRequired, in typing from 3.11.
+dependencies = ['typing_extensions>=4.0; python_version < "3.11"']
 keywords = ["gaiadesk", "remote-desktop", "sdk", "exec", "mcp", "ai-agents"]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -27,7 +28,7 @@ classifiers = [
 [project.optional-dependencies]
 # GaiaDesk's client library as a prebuilt extension (proprietary binary
 # licence): with it, the SDK needs no gaiadesk-cli. `pip install gaiadesk[native]`.
-native = ["gaiadesk-native>=0.10.323"]
+native = ["gaiadesk-native>=0.10.324"]
 
 [project.urls]
 Homepage = "https://github.com/Gaia-Desk/gaiadesk-python"
@@ -42,3 +43,12 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 gaiadesk = ["py.typed"]
+
+[tool.mypy]
+python_version = "3.9"
+
+[[tool.mypy.overrides]]
+# Generated (scripts/gen-sdk-types.mts in GaiaDesk): its NotRequired import is
+# a try/except, which mypy reads as typing.NotRequired on Python < 3.11.
+module = "gaiadesk.types_generated"
+disable_error_code = ["attr-defined"]

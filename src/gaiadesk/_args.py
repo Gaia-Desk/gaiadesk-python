@@ -85,13 +85,30 @@ def shape_flags(
     return a
 
 
-def exec_args(desk_id: str, command: Command, *, stdin: bool, json: bool, **shape: Any) -> List[str]:
+def check_cwd(cwd: Optional[str]) -> Optional[str]:
+    """``cwd``: a directory on the desk (absolute, or relative to the desk user's home / a confined token's folder)."""
+    if cwd is None:
+        return None
+    if not isinstance(cwd, str) or not cwd.strip():
+        raise _usage("cwd needs a directory on the desk")
+    return cwd
+
+
+def exec_args(desk_id: str, command: Command, *, stdin: bool, json: bool, json_stream: bool = False,
+              cwd: Optional[str] = None, **shape: Any) -> List[str]:
     """``exec --desk-id <id> [flags] -- <command>``. A str is ONE command line; a list is separate arguments."""
     argv = _argv(command, "exec")
+    if json and json_stream:
+        raise _usage("--json and --json-stream can't be combined")
     a = ["exec", "--desk-id", check_desk(desk_id), "--quiet"]
     if json:
         a.append("--json")
+    if json_stream:
+        a.append("--json-stream")
     a.append("--stdin" if stdin else "--no-stdin")
+    c = check_cwd(cwd)
+    if c is not None:
+        a += ["--cwd", c]
     a += shape_flags(**shape)
     return a + ["--"] + argv
 
@@ -144,10 +161,14 @@ def run_args(
     cpu: Optional[int] = None,
     mem: Optional[Union[int, str]] = None,
     keep_awake: Optional[bool] = None,
+    cwd: Optional[str] = None,
 ) -> List[str]:
-    """``run --detach --name <job> --desk-id <id> [caps] --json -- <command>``."""
+    """``run --detach --name <job> --desk-id <id> [--cwd <dir>] [caps] --json -- <command>``."""
     argv = _argv(command, "run")
     a = ["run", "--detach", "--name", check_job_name(name), "--desk-id", check_desk(desk_id)]
+    c = check_cwd(cwd)
+    if c is not None:
+        a += ["--cwd", c]
     if priority is not None:
         if priority not in ("low", "normal", "high"):
             raise _usage("priority is low, normal or high")

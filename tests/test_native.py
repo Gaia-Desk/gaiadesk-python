@@ -13,6 +13,8 @@ from helpers import OK
 sys.path.insert(0, os.path.join(helpers.HERE, "fixtures"))
 from mock_native import LOST, OFFLINE, REFUSED, USAGE, make_mock  # noqa: E402
 
+from gaiadesk._core import clear_feature_cache  # noqa: E402
+
 from gaiadesk import (  # noqa: E402
     AsyncGaiaDesk,
     CliNotFoundError,
@@ -30,8 +32,8 @@ from gaiadesk._native import load_native  # noqa: E402
 BASE = {k: os.environ[k] for k in ("PATH", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP") if k in os.environ}
 
 
-def native(cls=GaiaDesk, **opts):
-    m, calls, clients = make_mock()
+def native(cls=GaiaDesk, old=False, **opts):
+    m, calls, clients = make_mock(old)
     opts.setdefault("env", dict(BASE))
     return cls(native=m, **opts), calls, clients
 
@@ -119,13 +121,53 @@ class Operations(unittest.TestCase):
         self.assertEqual(gd.mesh_ip(OK), "100.64.0.1")
         self.assertIsNone(gd.disconnect(OK))
         gd.disconnect()
-        self.assertEqual(gd.version(), "gaiadesk-native 0.10.323")
+        self.assertEqual(gd.version(), "gaiadesk-native 0.10.324")
         by_op = {c["op"]: c["args"] for c in calls}
         self.assertEqual(by_op["job_run"], {"desk_id": OK, "name": "build", "command": "make",
                                             "limits": {"priority": "low", "cpu_percent": 50, "mem_mb": 4096, "keep_awake": True}})
         self.assertEqual(by_op["token_mint"], {"desks": [OK], "name": "bot", "scopes": ["exec"], "low_priv": True})
         self.assertEqual(by_op["token_revoke"]["account"], True)
         self.assertEqual(by_op["job_logs"], {"desk_id": OK, "name": "build", "tail": 100})
+
+    def test_cwd(self):
+        gd, calls, _ = native()
+        self.assertIn("cwd: /srv/app", gd.exec(OK, "make", cwd="/srv/app")["stdout"])
+        gd.run_job(OK, "build", "make", cwd="src")
+        s = gd.exec_stream(OK, "make", cwd="/w")
+        self.assertEqual(s.wait().exit_code, 0)
+        self.assertEqual(s.result["exit"], 0)
+        by_op = {c["op"]: c["args"] for c in calls}
+        self.assertEqual(by_op["exec"]["cwd"], "/srv/app")
+        self.assertEqual(by_op["job_run"], {"desk_id": OK, "name": "build", "command": "make", "limits": {}, "cwd": "src"})
+        self.assertEqual(by_op["stream:exec"]["cwd"], "/w")
+        with self.assertRaises(UsageError):
+            gd.exec(OK, "make", cwd="")
+
+    def test_v2_shapes_and_older_libraries(self):
+        for old in (False, True):
+            gd = native(old=old)[0]
+            with self.subTest(old=old):
+                self.assertEqual([j["name"] for j in gd.jobs(OK)], ["build"])
+                self.assertEqual(gd.list_tokens(OK)[0]["label"], "bot")
+                self.assertEqual(gd.audit(OK)[0]["action"], "exec.end")
+                self.assertEqual(gd.job_logs(OK, "build"), "line 1\nline 2\n")
+                self.assertEqual(gd.mesh_ip(OK), "100.64.0.1")
+                self.assertIsNone(gd.disconnect(OK))
+
+    def test_errors_carry_the_envelope(self):
+        gd = native()[0]
+        with self.assertRaises(UnreachableError) as c:
+            gd.exec(OFFLINE, "x")
+        e = c.exception
+        self.assertEqual((e.kind, e.reason, e.desk, e.exit_code), ("offline", "offline", OFFLINE, 255))
+        self.assertEqual(e.json["error"]["kind"], "unreachable")
+        with self.assertRaises(OperationFailedError) as c:
+            gd.kill_job(OK, "nope")
+        self.assertEqual((c.exception.kind, c.exception.desk), ("failed", OK))
+        old = native(old=True)[0]
+        with self.assertRaises(UnreachableError) as c:
+            old.exec(OFFLINE, "x")
+        self.assertEqual((c.exception.kind, c.exception.desk), ("offline", None))
 
     def test_streams(self):
         gd, _, _ = native()
@@ -141,7 +183,8 @@ class Operations(unittest.TestCase):
         f = gd.follow_job_logs(OK, "forever")
         for c in f:
             f.kill()
-        self.assertEqual(f.wait().exit_code, 130)
+        e = f.wait()
+        self.assertEqual((e.exit_code, e.stderr_tail), (130, "interrupted"))
         with self.assertRaises(RefusedError):
             gd.exec_stream(REFUSED, "x")
 
@@ -185,6 +228,14 @@ SCENARIOS = [
 
 
 class BothBackends(unittest.TestCase):
+    def setUp(self):
+        clear_feature_cache()
+
+    def test_cwd_on_both(self):
+        for gd in (cli(GaiaDesk), native()[0]):
+            self.assertIn("cwd: /srv", gd.exec(OK, "make", cwd="/srv")["stdout"])
+            self.assertEqual(gd.run_job(OK, "b", "make", cwd="/srv")["state"], "running")
+
     def test_same_errors(self):
         for name, run, cls, kind in SCENARIOS:
             for backend, gd in (("cli", cli(GaiaDesk)), ("native", native()[0])):

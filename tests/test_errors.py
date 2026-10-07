@@ -9,6 +9,7 @@ from gaiadesk import (
     ConnectionLostError,
     GaiaDeskError,
     OperationFailedError,
+    ProtocolError,
     RefusedError,
     UnreachableError,
     UsageError,
@@ -18,7 +19,16 @@ from gaiadesk.errors import ErrorEnvelope, error_from_run, last_stderr_line
 
 
 class ErrorEnvelopeTest(unittest.TestCase):
-    def test_every_shape_the_cli_prints_today(self):
+    def test_the_envelope_from_0_10_324(self):
+        self.assertEqual(
+            error_envelope({"error": {"kind": "unreachable", "message": "desk 123456789 is offline", "reason": "offline", "desk": "123456789"}}),
+            ErrorEnvelope("unreachable", "desk 123456789 is offline", "offline", "123456789"),
+        )
+        self.assertEqual(error_envelope({"error": {"kind": "failed", "message": "no job named x"}}), ErrorEnvelope("failed", "no job named x"))
+        # exec's object with the envelope's error in it
+        self.assertEqual(error_envelope({"exit": 254, "error": {"kind": "refused", "message": "no", "reason": None}}).kind, "refused")
+
+    def test_every_shape_older_clis_print(self):
         self.assertEqual(error_envelope({"error": {"kind": "offline", "message": "desk is offline"}}), ErrorEnvelope("offline", "desk is offline"))
         self.assertEqual(error_envelope({"error": {"kind": "usage"}}), ErrorEnvelope("usage", ""))
         self.assertEqual(error_envelope({"error": "no job named x"}), ErrorEnvelope(None, "no job named x"))
@@ -39,6 +49,28 @@ class ErrorEnvelopeTest(unittest.TestCase):
 
 
 class ErrorFromRunTest(unittest.TestCase):
+    def test_the_six_kinds(self):
+        for kind, cls in (("usage", UsageError), ("refused", RefusedError), ("unreachable", UnreachableError),
+                          ("connection_lost", ConnectionLostError), ("failed", OperationFailedError), ("protocol", ProtocolError)):
+            e = error_from_run(255, "", ["x"], {"error": {"kind": kind, "message": "m"}})
+            self.assertIs(type(e), cls, kind)
+            self.assertEqual((e.kind, e.reason, e.desk, str(e)), (kind, None, None, "m"))
+
+    def test_the_reason_and_desk(self):
+        e = error_from_run(255, "", [], {"error": {"kind": "unreachable", "message": "m", "reason": "not_online", "desk": "234567890"}})
+        self.assertIsInstance(e, UnreachableError)
+        self.assertEqual((e.kind, e.reason, e.desk), ("not_online", "not_online", "234567890"))
+        local = error_from_run(1, "", [], {"error": {"kind": "failed", "message": "m", "reason": "local"}})
+        self.assertIsInstance(local, OperationFailedError)
+        self.assertEqual(local.kind, "local")
+        # A reason this SDK does not know keeps the envelope's kind.
+        odd = error_from_run(255, "", [], {"error": {"kind": "unreachable", "message": "m", "reason": "solar_flare"}})
+        self.assertEqual((odd.kind, odd.reason), ("unreachable", "solar_flare"))
+        # No message: the stderr sentence.
+        self.assertEqual(str(error_from_run(255, "gaiadesk-cli: why\n", [], {"error": {"kind": "usage"}})), "why")
+        # An older shape still names its desk.
+        self.assertEqual(error_from_run(255, "", [], {"desk": "345678901", "error": "the desk did not answer"}).desk, "345678901")
+
     def test_a_kind_decides_the_class(self):
         e = error_from_run(255, "", ["exec"], {"error": {"kind": "not_online", "message": "m"}})
         self.assertIsInstance(e, UnreachableError)
