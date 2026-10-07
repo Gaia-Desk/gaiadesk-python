@@ -432,7 +432,7 @@ class ScreenSize(TypedDict):
     width: int
 
 
-Shell = Union[Literal["default"], Literal["none"], Literal["sh"], Literal["bash"], Literal["zsh"], Literal["cmd"], Literal["pwsh"]]
+Shell = Union[Literal["default"], Literal["none"], Literal["sh"], Literal["bash"], Literal["zsh"], Literal["cmd"], Literal["pwsh"], Literal["powershell"]]
 """Which shell runs a command on the desk."""
 
 

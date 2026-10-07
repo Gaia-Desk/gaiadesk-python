@@ -143,6 +143,7 @@ What it serves, with the same results and errors as the CLI transport:
 | `run_job`, `jobs`, `kill_job` | `POST` / `GET /desks/{id}/jobs`, `DELETE /desks/{id}/jobs/{name}` |
 | `job_logs(desk_id, name, tail=)` | `GET /desks/{id}/jobs/{name}/logs?tail=` |
 | `follow_job_logs(desk_id, name)` | `GET …/logs?follow=1` (Server-Sent Events of `JobLogEvent`s) |
+| `wait_job(desk_id, name, timeout=)` | `GET /desks/{id}/jobs/{name}/wait?timeout=` (`{job, timed_out}`; one request holds at most 870 s, so a longer or no `timeout` asks again until the job ends) |
 | `stats(desk_id)` | `GET /desks/{id}/stats` |
 | `upload(local, desk_id, remote)` | `PUT /desks/{id}/files?path=` with the file's bytes, streamed (a `remote` ending in `/` keeps the file name) |
 | `download(desk_id, remote, local)` | `GET /desks/{id}/files?path=` into `local` (a folder keeps the remote name) |
@@ -162,6 +163,9 @@ What it serves, with the same results and errors as the CLI transport:
   `retry_after` (seconds, on a 429). No connection is `UnreachableError`
   with kind `network`; an answer that is not the envelope is a
   `ProtocolError`.
+- `env=` and `shell=` go in the `ExecSpec` / `JobSpec` (`shell="powershell"` is
+  sent as `pwsh`, as gaiadesk-cli maps it). Values are never logged by the
+  API or the desk; a low-privilege token's desk refuses them, as for the CLI.
 - `timeout=` becomes `timeout_secs`; `connect_timeout`, `persist` and
   `verbose` do not apply. `create_token` needs a `name` over the API (and
   defaults `expires` to 7 days, `scopes` to exec, cp, jobs).
@@ -169,10 +173,8 @@ What it serves, with the same results and errors as the CLI transport:
 **Not available over the API** (a `UsageError`, kind `usage`, saying "not
 available over the API transport; use the CLI or native transport"):
 `shell`, `shell_stream`, `forward`, `agent_connect`, `mcp`, `measure`,
-`mesh_status`, `mesh_ip`, `disconnect`, `audit`, `wait_job`, `whoami`,
-`probe` / `devices(probe=True)`, recursive copies, `env=` (exec,
-exec_stream, run_job) and `shell=` on `run_job` (the API's `ExecSpec` and
-`JobSpec` have neither), `create_token(out=)`,
+`mesh_status`, `mesh_ip`, `disconnect`, `audit`, `whoami`,
+`probe` / `devices(probe=True)`, recursive copies, `create_token(out=)`,
 `revoke_token(all_for_desk=True)` / `account=True`, `exec_stream` with
 `stdin=True` or `json_stream=False`, and the CLI's own `version`,
 `cli_version_info`, `cli_features`, `raw`.
@@ -300,7 +302,7 @@ Every result is the CLI's JSON, with the CLI's field names (types in
 | `raw(args, input=)` | anything | `Completed(code, stdout, stderr)`: the escape hatch |
 
 `exec`/`shell` options: `shell` (`"default"` \| `"none"` \| `"sh"` \|
-`"bash"` \| `"zsh"` \| `"cmd"` \| `"pwsh"`; `run_job` takes the same but
+`"bash"` \| `"zsh"` \| `"cmd"` \| `"pwsh"` \| `"powershell"` (sent as `pwsh`); `run_job` takes the same but
 `default`/`none`), `timeout` (seconds or `"10m"`; `0` = none; CLI
 default 30m), `connect_timeout` (default 60s), `persist`, `verbose`,
 `stdin` (str or bytes; default closed; `exec_stream(stdin=True)` keeps it

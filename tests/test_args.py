@@ -38,6 +38,12 @@ class ArgsTest(unittest.TestCase):
             self.assertNotIn("x\0y", str(cm.exception), "an error never shows a value")
         for s in ("bash", "zsh"):
             self.assertIn(s, A.exec_args("1", "x", stdin=False, json=True, shell=s))
+        # `powershell` is a shell name everywhere `pwsh` is, sent as `pwsh` (as the CLI maps it).
+        a = A.exec_args("1", "Get-Date", stdin=False, json=True, shell="powershell")
+        self.assertEqual(a[a.index("--shell") + 1], "pwsh")
+        a = A.run_args("1", "b", "Get-Date", shell="powershell")
+        self.assertEqual(a[a.index("--shell") + 1], "pwsh")
+        self.assertEqual((A.wire_shell("powershell"), A.wire_shell("bash")), ("pwsh", "bash"))
 
     def test_env_names_the_cli_itself_reads_stay_on_argv(self):
         env = {"GAIADESK_TOKEN": "t", "gaiadesk_x": "y", "PATH": "/opt/bin", "HOME": "/h", "LC_ALL": "C", "Path": "p", "CI": "1"}

@@ -2,6 +2,15 @@
 
 ## 0.1.0 (unreleased)
 
+The API transport's `env=`, `shell=` and `wait_job`:
+
+- `env=` on `exec`, `exec_stream` and `run_job`, `shell=` on `run_job`, and
+  `wait_job` (`GET /desks/{id}/jobs/{name}/wait`; a `timeout` past the API's
+  870-second hold, or none, asks again until the job ends; a held answer's
+  keep-alive spaces and in-body error envelope are read) over the API.
+- `powershell` is a shell name everywhere `pwsh` is, sent as `pwsh` (as
+  gaiadesk-cli maps it). Regenerated types: `Shell` has `powershell`.
+
 For `gaiadesk-cli` / `gaiadesk-native` 0.10.324:
 
 - **API transport.** `GaiaDesk(api_key=..., desk_token=None, base_url=None,

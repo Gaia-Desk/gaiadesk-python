@@ -14,7 +14,7 @@ from .errors import UsageError
 def _shape(shape: Mapping[str, Any]) -> Dict[str, Any]:
     s: Dict[str, Any] = {}
     if shape.get("shell") is not None:
-        s["shell"] = shape["shell"]
+        s["shell"] = A.wire_shell(shape["shell"])
     for k, flag in (("timeout", "--timeout"), ("connect_timeout", "--connect-timeout"), ("persist", "--persist")):
         if shape.get(k) is not None:
             s[k] = A.duration(shape[k], flag)
@@ -78,7 +78,7 @@ def run_job(desk_id: str, name: str, command: Any, limits: Mapping[str, Any]) ->
     if limits.get("cwd") is not None:
         a["cwd"] = A.check_cwd(limits["cwd"])
     if limits.get("shell") is not None:
-        a["shell"] = limits["shell"]
+        a["shell"] = A.wire_shell(limits["shell"])
     if limits.get("env") is not None:
         a["env"] = A.check_env(limits["env"])
     return a

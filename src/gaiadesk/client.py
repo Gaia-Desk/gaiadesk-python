@@ -322,7 +322,7 @@ class GaiaDesk(Base):
                 cwd: Optional[str] = None, shell: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> "JobInfo":
         """``run --detach --json``: a named background job that outlives this connection.
         ``cwd``: the directory it starts in on the desk (``--cwd``; a CLI without the ``run_cwd`` feature is a UsageError).
-        ``shell``: ``sh``, ``bash``, ``zsh``, ``cmd`` or ``pwsh`` runs the command (``--shell``; default
+        ``shell``: ``sh``, ``bash``, ``zsh``, ``cmd``, ``pwsh`` or ``powershell`` runs the command (``--shell``; default
         ``sh -c`` / ``cmd /c``). ``env``: environment variables for the job, ``{NAME: value}`` (``--env``)."""
         return self._run(self._p_run_job(desk_id, name, command, dict(priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake, cwd=cwd,
                                                                       shell=shell, env=env)))

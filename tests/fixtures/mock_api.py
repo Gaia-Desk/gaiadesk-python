@@ -88,6 +88,20 @@ def status_for(kind, reason=None):
     return 502
 
 
+WAITS = []
+"""Every ``timeout`` a wait was asked with, in order (the tests read it)."""
+
+
+def env_args(env):
+    """A spec's ``env`` as the CLI's ``--env KEY=VALUE`` flags (the fake logs its argv)."""
+    if not isinstance(env, dict):
+        return []
+    out = []
+    for k, v in env.items():
+        out += ["--env", "%s=%s" % (k, v)]
+    return out
+
+
 def last_line(s):
     lines = [l.strip() for l in s.splitlines() if l.strip()]
     last = lines[-1] if lines else ""
@@ -243,6 +257,7 @@ class Handler(BaseHTTPRequestHandler):
                 args += ["--timeout", str(s["timeout_secs"])]
             if s.get("cwd"):
                 args += ["--cwd", s["cwd"]]
+            args += env_args(s.get("env"))
             args += ["--"] + (s["argv"] if isinstance(s.get("argv"), list) else [s["command"]])
             if stream:
                 self.start_sse()
@@ -285,6 +300,9 @@ class Handler(BaseHTTPRequestHandler):
                 args.append("--keep-awake")
             if lim.get("keep_awake") is False:
                 args.append("--no-keep-awake")
+            if s.get("shell"):
+                args += ["--shell", s["shell"]]
+            args += env_args(s.get("env"))
             return self.relay(run_fake(args + ["--json", "--"] + s["command"]), status=201)
         if rest == "/jobs" and m == "GET":
             return self.relay(run_fake(["ps", "--desk-id", desk, "--json"]))
@@ -293,6 +311,33 @@ class Handler(BaseHTTPRequestHandler):
             name = unquote(sub[0])
             if len(sub) == 1 and m == "DELETE":
                 return self.relay(run_fake(["kill", name, "--desk-id", desk, "--json"]))
+            if sub[1:] == ["wait"] and m == "GET":
+                # `wait --json`: the job (exit: its code; 124: the timeout ran out), as {job, timed_out}.
+                WAITS.append(q.get("timeout"))
+                args = ["wait", name, "--desk-id", desk, "--json"]
+                if q.get("timeout") is not None and q.get("timeout") != "870":
+                    args += ["--timeout", q["timeout"]]
+                code, out, err = run_fake(args)
+                j = parse(out)
+                if not isinstance(j, dict) or isinstance(j.get("error"), dict):
+                    return self.relay((code, out, err))
+                result = {"job": j, "timed_out": code == 124 and j.get("state") == "running"}
+                if name in ("held", "held-fail"):
+                    # A held answer: keep-alive spaces, then the JSON (or the envelope, in a 200).
+                    fail = {"error": {"kind": "connection_lost", "message": "The desk went away during this operation.",
+                                      "reason": "desk_disconnected", "desk": desk, "request_id": request_id()}}
+                    payload = json.dumps(result if name == "held" else fail).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("X-Request-Id", request_id())
+                    self.end_headers()
+                    for _ in range(3):
+                        self.wfile.write(b" ")
+                        self.wfile.flush()
+                    self.wfile.write(payload)
+                    self.close_connection = True
+                    return None
+                return self.send_json(200, result)
             if sub[1:] == ["logs"] and m == "GET":
                 args = ["logs", name, "--desk-id", desk] + (["--follow"] if q.get("follow") == "1" else []) + ["--json"]
                 if q.get("tail") is not None:

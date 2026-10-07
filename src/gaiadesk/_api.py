@@ -43,6 +43,8 @@ from .stream import Chunk, Exit
 DEFAULT_API_URL = "https://api.gaiadesk.net/v1"
 API_FILE_LIMIT = 256 * 1024 * 1024
 """The most one file may be through the API (larger files go direct, through the CLI or native transport)."""
+API_WAIT_MAX = 870
+"""The longest one ``GET …/jobs/{name}/wait`` holds, in seconds (the API's ``timeout`` maximum)."""
 
 _UNITS = {"s": 1, "sec": 1, "secs": 1, "m": 60, "min": 60, "mins": 60, "h": 3600, "d": 86400, "w": 604800}
 
@@ -488,11 +490,11 @@ class ApiTransport:
 
     @staticmethod
     def exec_spec(command: A.Command, stdin: Union[None, str, bytes], shape: Mapping[str, Any]) -> Dict[str, Any]:
-        if shape.get("env"):
-            raise not_over_api("env= on exec", "the API's ExecSpec has no environment; set it in the command, or use the CLI or native transport")
         spec: Dict[str, Any] = {"command": command} if isinstance(command, str) else {"argv": list(command)}
         if shape.get("shell") is not None:
-            spec["shell"] = shape["shell"]
+            spec["shell"] = A.wire_shell(shape["shell"])
+        if shape.get("env") is not None:
+            spec["env"] = A.check_env(shape["env"])
         if shape.get("cwd") is not None:
             spec["cwd"] = shape["cwd"]
         if shape.get("timeout") is not None:
@@ -592,10 +594,6 @@ class ApiTransport:
 
     def run_job(self, desk_id: str, name: str, command: A.Command, limits: Mapping[str, Any]) -> Any:
         """``POST /desks/{id}/jobs`` with a JobSpec: the Job."""
-        if limits.get("env"):
-            raise not_over_api("env= on run_job", "the API's JobSpec has no environment; use the CLI or native transport")
-        if limits.get("shell") is not None:
-            raise not_over_api("shell= on run_job", "the API's JobSpec runs the desk's own shell; use the CLI or native transport")
         lim: Dict[str, Any] = {}
         if limits.get("priority") is not None:
             lim["priority"] = limits["priority"]
@@ -608,7 +606,32 @@ class ApiTransport:
         spec: Dict[str, Any] = {"name": name, "command": [command] if isinstance(command, str) else list(command), "limits": lim}
         if limits.get("cwd") is not None:
             spec["cwd"] = limits["cwd"]
+        if limits.get("shell") is not None:
+            spec["shell"] = A.wire_shell(limits["shell"])
+        if limits.get("env") is not None:
+            spec["env"] = A.check_env(limits["env"])
         return self.call("POST", self.desk(desk_id) + "/jobs", json=spec)
+
+    def wait_job(self, desk_id: str, name: str, timeout: Optional[A.Duration]) -> Any:
+        """``GET /desks/{id}/jobs/{name}/wait``: ``{job, timed_out}`` once the job is no longer
+        running. One request holds at most :data:`API_WAIT_MAX` seconds, so a longer (or no)
+        ``timeout`` asks again until the job ends or the time is up. A held answer may start
+        with keep-alive spaces, and may be the error envelope (the desk failed after its 200)."""
+        path = self.desk(desk_id) + "/jobs/" + quote(A.check_job_name(name), safe="") + "/wait"
+        total = None if timeout is None else seconds(timeout, "timeout")
+        started = time.monotonic()
+        while True:
+            left = API_WAIT_MAX if total is None else max(0.0, total - (time.monotonic() - started))
+            r = self.call("GET", path, query={"timeout": min(API_WAIT_MAX, int(-(-left // 1)))})
+            env = error_envelope(r)
+            if env is not None:
+                raise error_for_kind(env.kind, env.message or "the wait failed", env.reason, exit_code=desk_op_exit(env.kind),
+                                     argv=["GET " + path], json=r, desk=env.desk)
+            if not isinstance(r, dict) or not isinstance(r.get("job"), dict) or not isinstance(r.get("timed_out"), bool):
+                raise ProtocolError("the GaiaDesk API answered a wait without a job", kind="protocol", argv=["GET " + path], json=r)
+            over = total is not None and time.monotonic() - started >= total
+            if not r["timed_out"] or over or total == 0:
+                return r
 
     def jobs(self, desk_id: str) -> Any:
         return self.call("GET", self.desk(desk_id) + "/jobs")

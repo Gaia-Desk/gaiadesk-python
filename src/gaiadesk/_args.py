@@ -14,8 +14,13 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from .errors import UsageError
 
-SHELLS = ("default", "none", "sh", "bash", "zsh", "cmd", "pwsh")
-JOB_SHELLS = ("sh", "bash", "zsh", "cmd", "pwsh")
+SHELLS = ("default", "none", "sh", "bash", "zsh", "cmd", "pwsh", "powershell")
+JOB_SHELLS = ("sh", "bash", "zsh", "cmd", "pwsh", "powershell")
+
+
+def wire_shell(shell: str) -> str:
+    """The shell's name as sent: ``powershell`` is ``pwsh``, as gaiadesk-cli reads it."""
+    return "pwsh" if shell == "powershell" else shell
 Duration = Union[int, float, str]
 Command = Union[str, Sequence[str]]
 
@@ -72,7 +77,7 @@ def shape_flags(
     if shell is not None:
         if shell not in SHELLS:
             raise _usage("shell is one of " + ", ".join(SHELLS))
-        a += ["--shell", shell]
+        a += ["--shell", wire_shell(shell)]
     if timeout is not None:
         a += ["--timeout", duration(timeout, "--timeout")]
     if connect_timeout is not None:
@@ -234,7 +239,7 @@ def run_args(
     if shell is not None:
         if shell not in JOB_SHELLS:
             raise _usage("a job's shell is one of " + ", ".join(JOB_SHELLS))
-        a += ["--shell", shell]
+        a += ["--shell", wire_shell(shell)]
     a += env_flags(env)
     if priority is not None:
         if priority not in ("low", "normal", "high"):

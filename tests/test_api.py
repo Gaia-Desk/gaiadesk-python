@@ -18,6 +18,7 @@ from mock_api import HTML_DESK, LIMITED_DESK, MockApi  # noqa: E402
 
 from gaiadesk import (  # noqa: E402
     DEFAULT_API_URL,
+    GaiaDeskError,
     AsyncGaiaDesk,
     GaiaDesk,
     OperationFailedError,
@@ -94,6 +95,56 @@ class Wire(unittest.TestCase):
         self.assertEqual(body(), {"argv": ["ls", "-l"]})
         gd.exec_stream(OK, "x").wait()
         self.assertEqual((API.last()["query"], API.last()["headers"]["accept"]), ({"stream": "1"}, "text/event-stream"))
+
+    def test_env_and_shell_in_the_exec_and_job_specs(self):
+        gd = api()
+        gd.exec(OK, "deploy", shell="powershell", env={"STAGE": "prod", "EMPTY": ""})
+        self.assertEqual(body(), {"command": "deploy", "shell": "pwsh", "env": {"STAGE": "prod", "EMPTY": ""}},
+                         "powershell is sent as pwsh, as the CLI maps it")
+        gd.exec_stream(OK, "x", env={"A": "1"}).wait()
+        self.assertEqual(body(), {"command": "x", "env": {"A": "1"}})
+        gd.run_job(OK, "build", "make all", shell="bash", env={"CI": "1"})
+        self.assertEqual(body(), {"name": "build", "command": ["make all"], "limits": {}, "shell": "bash", "env": {"CI": "1"}})
+        gd.run_job(OK, "build", "Get-Date", shell="powershell")
+        self.assertEqual(body()["shell"], "pwsh")
+        before = len(API.requests)
+        with self.assertRaises(UsageError) as cm:
+            gd.exec(OK, "x", env={"A=B": "secret-value"})
+        self.assertNotIn("secret-value", str(cm.exception))
+        for call in (lambda: gd.run_job(OK, "b", "x", env={"A": "nul\0"}), lambda: gd.run_job(OK, "b", "x", shell="none"),
+                     lambda: gd.exec(OK, "x", shell="fish")):
+            self.assertRaises(UsageError, call)
+        self.assertEqual(len(API.requests), before, "nothing sent for a bad env or shell")
+
+    def test_wait_job(self):
+        from mock_api import WAITS
+
+        gd = api()
+        done = gd.wait_job(OK, "failing", timeout="10m")
+        self.assertEqual((API.last()["method"], API.last()["path"], API.last()["query"]),
+                         ("GET", "/v1/desks/%s/jobs/failing/wait" % OK, {"timeout": "600"}))
+        self.assertEqual((done["timed_out"], done["job"]["state"], done["job"]["exit_code"]), (False, "exited", 3))
+        now = gd.wait_job(OK, "slow", timeout=0)
+        self.assertEqual((now["timed_out"], now["job"]["state"], API.last()["query"]["timeout"]), (True, "running", "0"))
+        forever = gd.wait_job(OK, "build")
+        self.assertEqual((forever["timed_out"], API.last()["query"]["timeout"]), (False, "870"))
+        self.assertEqual(gd.wait_job(OK, "held")["job"]["name"], "held", "leading keep-alive spaces are still JSON")
+        with self.assertRaises(GaiaDeskError) as cm:
+            gd.wait_job(OK, "held-fail")
+        self.assertEqual((cm.exception.kind, cm.exception.reason), ("connection_lost", "desk_disconnected"))
+        with self.assertRaises(OperationFailedError):
+            gd.wait_job(OK, "nope")
+        del WAITS[:]
+        slow = gd.wait_job(OK, "slow", timeout=0.3)
+        self.assertTrue(slow["timed_out"])
+        self.assertTrue(WAITS and all(t == "1" for t in WAITS), WAITS)
+        self.assertRaises(UsageError, lambda: gd.wait_job(OK, "-x"))
+
+        async def go():
+            r = await api(AsyncGaiaDesk).wait_job(OK, "failing")
+            self.assertEqual(r["job"]["exit_code"], 3)
+
+        asyncio.run(go())
 
     def test_job_and_token_specs(self):
         gd = api()
@@ -234,11 +285,6 @@ class NotServed(unittest.TestCase):
                 lambda: gd.revoke_token(OK, "bot", account=True),
                 lambda: gd.exec_stream(OK, "cat", stdin=True),
                 lambda: gd.exec_stream(OK, "cat", json_stream=False),
-                lambda: gd.exec(OK, "env", env={"A": "1"}),
-                lambda: gd.exec_stream(OK, "env", env={"A": "1"}),
-                lambda: gd.run_job(OK, "build", "make", env={"A": "1"}),
-                lambda: gd.run_job(OK, "build", "make", shell="bash"),
-                lambda: gd.wait_job(OK, "build"),
                 lambda: gd.whoami(),
             ]
             for call in calls:

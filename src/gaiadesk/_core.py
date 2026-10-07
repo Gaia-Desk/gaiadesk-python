@@ -556,7 +556,8 @@ class Base:
 
     def _p_wait_job(self, desk_id: str, name: str, timeout: Optional[A.Duration]) -> Plan:
         a = A.wait_args(desk_id, name, timeout)
-        return Plan(a, None, wait_finish(a), N.NativeReq("job_wait", N.wait_job(desk_id, name, timeout)), what="wait_job()")
+        return Plan(a, None, wait_finish(a), N.NativeReq("job_wait", N.wait_job(desk_id, name, timeout)),
+                    api=lambda t: t.wait_job(desk_id, name, timeout), what="wait_job()")
 
     def _p_whoami(self) -> Plan:
         a = A.whoami_args()
