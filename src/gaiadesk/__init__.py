@@ -9,6 +9,9 @@ gaiadesk-cli. ``GaiaDesk(...).backend`` says which.
 
 Given ``api_key``, it drives desks through GaiaDesk's hosted API instead
 (standard library only): ``GaiaDesk(api_key="ak_...", desk_token="gdagt_...")``.
+The same operations from a desk itself: ``GaiaDesk(transport="local")`` (code
+running on the desk) or ``GaiaDesk(transport="lan", base_url=..., fingerprint=...,
+desk_token=...)`` (a desk's LAN gateway, its certificate pinned).
 
 ``AsyncGaiaDesk`` is the asyncio twin.
 """
@@ -16,7 +19,18 @@ Given ``api_key``, it drives desks through GaiaDesk's hosted API instead
 from .aio import AsyncForward, AsyncGaiaDesk
 from .client import Forward, GaiaDesk
 from ._api import API_FILE_LIMIT, DEFAULT_API_URL, ApiStream, AsyncApiStream
-from ._core import Completed, locate_cli
+from ._core import TRANSPORTS, Completed, locate_cli
+from ._local import (
+    FingerprintMismatchError,
+    certificate_fingerprint,
+    default_local_address,
+    local_api_dir,
+    local_pipe_name,
+    local_socket_path,
+    local_token_path,
+    normalize_fingerprint,
+    pipe_user,
+)
 from .errors import (
     CliNotFoundError,
     CommandError,
@@ -48,6 +62,15 @@ __all__ = [
     "AsyncApiStream",
     "DEFAULT_API_URL",
     "API_FILE_LIMIT",
+    "TRANSPORTS",
+    "normalize_fingerprint",
+    "certificate_fingerprint",
+    "local_api_dir",
+    "local_socket_path",
+    "local_token_path",
+    "local_pipe_name",
+    "pipe_user",
+    "default_local_address",
     "Chunk",
     "Exit",
     "Completed",
@@ -63,6 +86,7 @@ __all__ = [
     "UsageError",
     "RefusedError",
     "UnreachableError",
+    "FingerprintMismatchError",
     "ConnectionLostError",
     "OperationFailedError",
     "ProtocolError",

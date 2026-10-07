@@ -39,6 +39,11 @@ FEATURE_SHELL_CWD = "shell_cwd"
 
 DOWNLOAD_URL = "https://gaiadesk.net/download"
 
+TRANSPORTS = ("direct", "api", "local", "lan")
+"""``transport=``: ``direct`` (gaiadesk-cli or the native library; the default without ``api_key``),
+``api`` (the hosted API; the default with ``api_key``), ``local`` (the desk's own API, from code on
+the desk) and ``lan`` (a desk's LAN gateway)."""
+
 
 @dataclass
 class Completed:
@@ -380,17 +385,42 @@ class Base:
         desk_token: Optional[str] = None,
         base_url: Optional[str] = None,
         wake: Optional[int] = None,
+        transport: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        socket_path: Optional[str] = None,
+        token: Optional[str] = None,
     ) -> None:
         self._api: "Optional[ApiTransport]" = None
-        if api_key is None:
-            if desk_token is not None or base_url is not None or wake is not None:
+        if transport is None:
+            transport = "direct" if api_key is None else "api"
+        if transport not in TRANSPORTS:
+            raise UsageError("transport is %s (not %r)" % (", ".join(TRANSPORTS), transport), kind="usage")
+        given = {k for k, v in (("api_key", api_key), ("desk_token", desk_token), ("base_url", base_url), ("wake", wake),
+                                ("fingerprint", fingerprint), ("socket_path", socket_path), ("token", token)) if v is not None}
+        allowed = {"direct": set(), "api": {"api_key", "desk_token", "base_url", "wake"},
+                   "local": {"desk_token", "socket_path", "token"}, "lan": {"base_url", "fingerprint", "desk_token"}}[transport]
+        extra = sorted(given - allowed)
+        if extra:
+            if transport == "direct" and set(extra) <= {"desk_token", "base_url", "wake"}:
                 raise UsageError("desk_token, base_url and wake are for the API transport: give api_key too", kind="usage")
-        else:
-            if backend is not None or cli is not None or native is not None:
-                raise UsageError("api_key selects the API transport; it cannot be combined with backend, cli or native", kind="usage")
+            raise UsageError("%s %s not for the %s transport" % (", ".join(extra), "is" if len(extra) == 1 else "are", transport), kind="usage")
+        if transport != "direct" and (backend is not None or cli is not None or native is not None):
+            what = "api_key" if transport == "api" and api_key is not None else "transport=%r" % transport
+            raise UsageError("%s selects the %s transport; it cannot be combined with backend, cli or native" % (what, transport), kind="usage")
+        if transport == "api":
             from ._api import ApiTransport
 
+            if api_key is None:
+                raise UsageError("the api transport needs api_key", kind="usage")
             self._api = ApiTransport(api_key, desk_token, base_url, wake)
+        elif transport == "local":
+            from ._local import LocalTransport
+
+            self._api = LocalTransport(desk_token, token, socket_path, environ=env)
+        elif transport == "lan":
+            from ._local import LanTransport
+
+            self._api = LanTransport(base_url, fingerprint, desk_token)  # type: ignore[arg-type]
         self._backend_opt = backend
         self._native_mod = native
         self._native: Any = False  # False: not decided yet; None: the CLI
@@ -475,9 +505,9 @@ class Base:
     @property
     def backend(self) -> str:
         """Which backend runs the operations: ``api`` (the hosted API, given ``api_key``),
-        ``native`` (gaiadesk_native) or ``cli`` (gaiadesk-cli)."""
+        ``local`` / ``lan`` (a desk's own API), ``native`` (gaiadesk_native) or ``cli`` (gaiadesk-cli)."""
         if self._api is not None:
-            return "api"
+            return self._api.transport
         return "native" if self._nat() is not None else "cli"
 
     def _cli_only(self, what: str, hint: Optional[str] = None) -> None:

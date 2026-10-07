@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- **`local` and `lan` transports.** `GaiaDesk(transport="local")` drives the
+  desk the code runs on through its own `/v1` API (HTTP/1.1 over the Unix
+  socket `$GAIADESK_API_DIR/api.sock` or `~/.gaiadesk/api.sock`; on Windows
+  the named pipe `\\.\pipe\gaiadesk-api-<user>` or `$GAIADESK_API_PIPE`;
+  `socket_path=` overrides), with `desk_token=` as `X-GaiaDesk-Desk-Token` or
+  else the local admin token (`token=`, else the `api-token` file) as Bearer.
+  `GaiaDesk(transport="lan", base_url=, fingerprint=, desk_token=)` drives a
+  desk's LAN gateway over HTTPS with its self-signed certificate pinned by
+  SHA-256 (checked before any request byte is sent;
+  `FingerprintMismatchError`, reason `fingerprint_mismatch`). Both reuse the
+  API transport's operations: same methods, results, errors, SSE streams and
+  held waits; `AsyncGaiaDesk` too. `backend` is `"local"` / `"lan"`. A
+  missing local API is `UnreachableError` reason `local_api_unavailable`.
+  Without `transport=` nothing changes (`api_key` → `api`, else direct).
+- New helpers: `normalize_fingerprint`, `certificate_fingerprint`,
+  `local_api_dir`, `local_socket_path`, `local_token_path`,
+  `local_pipe_name`, `pipe_user`, `default_local_address`, and `TRANSPORTS`.
+
 ## 0.1.0 (unreleased)
 
 The API transport's `env=`, `shell=` and `wait_job`:

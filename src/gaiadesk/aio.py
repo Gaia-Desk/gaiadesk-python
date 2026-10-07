@@ -209,13 +209,13 @@ class AsyncGaiaDesk(Base):
     async def upload_bytes(self, data: Union[str, bytes], desk_id: str, remote: str) -> "CpSummary":
         """As ``GaiaDesk.upload_bytes`` (API transport only)."""
         if self._api is None:
-            raise UsageError("upload_bytes is for the API transport (give api_key); use upload() with a local file", kind="usage")
+            raise UsageError("upload_bytes is for the HTTP transports (api, local, lan); use upload() with a local file", kind="usage")
         return await asyncio.get_running_loop().run_in_executor(None, self._api.upload_bytes, data, desk_id, remote)
 
     async def download_bytes(self, desk_id: str, remote: str) -> bytes:
         """As ``GaiaDesk.download_bytes`` (API transport only)."""
         if self._api is None:
-            raise UsageError("download_bytes is for the API transport (give api_key); use download() to a local file", kind="usage")
+            raise UsageError("download_bytes is for the HTTP transports (api, local, lan); use download() to a local file", kind="usage")
         return await asyncio.get_running_loop().run_in_executor(None, self._api.download_bytes, desk_id, remote)
 
     async def run_job(self, desk_id: str, name: str, command: A.Command, *, priority: Optional[str] = None,

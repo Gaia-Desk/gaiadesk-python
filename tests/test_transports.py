@@ -1,7 +1,9 @@
-"""The same behaviour on both transports: every case in ``Shared`` runs once
-against the CLI transport (the fake gaiadesk-cli) and once against the API
-transport (the mock hosted API, which answers from the same fake CLI).
-Results, error classes, kinds, reasons, desks and exit codes must match."""
+"""The same behaviour on every transport: every case in ``Shared`` runs
+against the CLI transport (the fake gaiadesk-cli), the API transport (the
+mock hosted API, which answers from the same fake CLI), and the ``local``
+(a Unix socket) and ``lan`` (pinned HTTPS) transports (a desk serving the
+same API itself). Results, error classes, kinds, reasons, desks and exit
+codes must match."""
 
 import os
 import sys
@@ -13,6 +15,7 @@ from helpers import OFFLINE, OK, PLAIN, REFUSED, USAGE
 
 sys.path.insert(0, os.path.join(helpers.HERE, "fixtures"))
 from mock_api import MockApi  # noqa: E402
+from mock_desk_api import MockLanApi, MockLocalApi  # noqa: E402
 
 from gaiadesk import (  # noqa: E402
     CommandError,
@@ -26,15 +29,25 @@ from gaiadesk import (  # noqa: E402
 )
 
 API = None
+LOCAL = None
+LAN = None
+UNIX = hasattr(__import__("socket"), "AF_UNIX") and os.name != "nt"
+HTTP = ("api", "local", "lan")
 
 
 def setUpModule():
-    global API
+    global API, LOCAL, LAN
     API = MockApi()
+    LAN = MockLanApi()
+    if UNIX:
+        LOCAL = MockLocalApi()
 
 
 def tearDownModule():
     API.close()
+    LAN.close()
+    if LOCAL is not None:
+        LOCAL.close()
 
 
 def text_of(stream):
@@ -197,12 +210,12 @@ class Shared:
         d = local_files()
         up = gd.upload(os.path.join(d, "app.txt"), OK, "deploy/")
         self.assertEqual((up["direction"], up["desk"], up["dirs"]), ("upload", OK, 0))
-        if self.name == "api":
+        if self.name in HTTP:
             self.assertEqual(up["destination"], "deploy/app.txt", "a remote folder keeps the file name")
         local = os.path.join(d, "got.log")
         down = gd.download(OK, "logs/app.log", local)
         self.assertEqual((down["direction"], down["desk"]), ("download", OK))
-        if self.name == "api":
+        if self.name in HTTP:
             with open(local) as f:
                 self.assertEqual(f.read(), "contents of logs/app.log\n")
         with self.assertRaises(OperationFailedError) as cm:
@@ -259,6 +272,39 @@ class ApiTransport(Shared, unittest.TestCase):
 
     def anon(self):
         return GaiaDesk(api_key="ak_test", desk_token="gdagt_test", base_url=API.url)
+
+
+@unittest.skipUnless(UNIX, "the local transport is a Unix socket here (a named pipe on Windows)")
+class LocalTransport(Shared, unittest.TestCase):
+    name = "local"
+
+    def local(self, **kw):
+        return GaiaDesk(transport="local", env={"GAIADESK_API_DIR": LOCAL.dir}, **kw)
+
+    def desk(self):
+        return self.local(desk_token="gdagt_test")
+
+    def owner(self):
+        return self.local()  # the desk's local admin token
+
+    def anon(self):
+        return self.local(desk_token="gdagt_test")
+
+
+class LanTransport(Shared, unittest.TestCase):
+    name = "lan"
+
+    def lan(self, token):
+        return GaiaDesk(transport="lan", base_url=LAN.url, fingerprint=LAN.fingerprint, desk_token=token)
+
+    def desk(self):
+        return self.lan("gdagt_test")
+
+    def owner(self):
+        return self.lan("gdagt_owner")
+
+    def anon(self):
+        return self.lan("gdagt_test")
 
 
 if __name__ == "__main__":

@@ -179,6 +179,53 @@ available over the API transport; use the CLI or native transport"):
 `stdin=True` or `json_stream=False`, and the CLI's own `version`,
 `cli_version_info`, `cli_features`, `raw`.
 
+## Local and LAN
+
+GaiaDesk desks serve the same `/v1` desk operations themselves, so the API
+transport's methods, results, errors and streams work against a desk
+directly (standard library only, no hosted API in between):
+
+```python
+import os
+from gaiadesk import GaiaDesk
+
+# Code running ON the desk: its own GaiaDesk over a Unix socket
+# ($GAIADESK_API_DIR/api.sock, else ~/.gaiadesk/api.sock) or, on Windows,
+# the named pipe \\.\pipe\gaiadesk-api-<user> ($GAIADESK_API_PIPE).
+gd = GaiaDesk(transport="local")
+gd.backend  # "local"
+r = gd.exec("123456789", "hostname")
+
+# A desk's opt-in LAN gateway, its self-signed certificate pinned by the
+# SHA-256 fingerprint the desk's Settings shows (with or without colons).
+lan = GaiaDesk(
+    transport="lan",
+    base_url="https://gaiadesk-123456789.local:7443/v1",
+    fingerprint="ab:cd:…",                  # 32 hex pairs
+    desk_token=os.environ["GAIADESK_DESK_TOKEN"],  # required: agent tokens only on the LAN
+)
+lan.devices()  # the desk, plus paired desks it reaches on its LAN (ops on them are forwarded)
+```
+
+- **`local`** needs Settings → GaiaDesk API → Local API on. Credentials:
+  `desk_token=` (an agent token, sent as `X-GaiaDesk-Desk-Token`), else the
+  desk's local admin token: `token=`, else the `api-token` file beside the
+  socket (`$GAIADESK_API_DIR/api-token`, else `~/.gaiadesk/api-token`; on
+  Windows `%USERPROFILE%\.gaiadesk\api-token`), sent as
+  `Authorization: Bearer`. `socket_path=` gives another socket path or pipe
+  name. No socket (or no token file) is `UnreachableError` with reason
+  `local_api_unavailable`.
+- **`lan`** requires `https://`, a `fingerprint` and a `desk_token`. The
+  certificate is checked right after the TLS handshake, before a byte of the
+  request is sent; another certificate is `FingerprintMismatchError` (an
+  `UnreachableError`, reason `fingerprint_mismatch`).
+- Both serve what the API transport serves (same table above, same
+  256 MB file limit and `UsageError` for the rest); `wake` does not apply.
+  `AsyncGaiaDesk(transport=...)` is the same for asyncio.
+- Helpers: `normalize_fingerprint`, `certificate_fingerprint`,
+  `local_api_dir`, `local_socket_path`, `local_token_path`,
+  `local_pipe_name`, `pipe_user`, `default_local_address`.
+
 ## Quickstart
 
 ```python

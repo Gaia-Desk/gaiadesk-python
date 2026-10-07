@@ -1,7 +1,8 @@
 """The synchronous client: each method runs one gaiadesk-cli command (with
 ``--json`` where the CLI has it) and returns the CLI's own JSON as a dict.
 Given ``api_key``, the same methods go to GaiaDesk's hosted API instead
-(``_api``): same results and errors, and a UsageError for what it does not serve."""
+(``_api``): same results and errors, and a UsageError for what it does not serve.
+``transport="local"`` / ``"lan"`` send them to a desk's own API (``_local``)."""
 
 from __future__ import annotations
 
@@ -108,6 +109,19 @@ class GaiaDesk(Base):
       ``X-GaiaDesk-Desk-Token``. From an API key, desk operations need one.
     * ``base_url``: default ``https://api.gaiadesk.net/v1``.
     * ``wake``: if a desk is asleep, ring it and wait up to this many seconds (0-120).
+
+    The same operations, results and errors, served by a desk itself (``transport=``):
+
+    * ``transport="local"``: code on the desk talks to its own GaiaDesk over the Unix
+      socket ``$GAIADESK_API_DIR/api.sock`` (else ``~/.gaiadesk/api.sock``) or, on
+      Windows, the named pipe ``\\\\.\\pipe\\gaiadesk-api-<user>`` (``$GAIADESK_API_PIPE``).
+      ``socket_path``: another socket path or pipe name. ``desk_token``: an agent
+      token, sent as ``X-GaiaDesk-Desk-Token``; without one, the desk's local admin
+      token (``token``, else the ``api-token`` file beside the socket) as Bearer.
+    * ``transport="lan"``: a desk's LAN gateway. ``base_url`` (``https://<desk>:7443/v1``),
+      ``fingerprint`` (its certificate's SHA-256, as the desk's Settings shows it; pinned)
+      and ``desk_token`` (required: the gateway takes agent tokens only).
+    * ``transport="api"`` / ``"direct"``: the defaults with / without ``api_key``.
     """
 
     def _run(self, plan: Plan) -> Any:
@@ -306,13 +320,13 @@ class GaiaDesk(Base):
     def upload_bytes(self, data: Union[str, bytes], desk_id: str, remote: str) -> "CpSummary":
         """API transport only: write ``data`` to ``remote`` on the desk (``PUT /desks/{id}/files``, at most 256 MB)."""
         if self._api is None:
-            raise UsageError("upload_bytes is for the API transport (give api_key); use upload() with a local file", kind="usage")
+            raise UsageError("upload_bytes is for the HTTP transports (api, local, lan); use upload() with a local file", kind="usage")
         return self._api.upload_bytes(data, desk_id, remote)
 
     def download_bytes(self, desk_id: str, remote: str) -> bytes:
         """API transport only: the bytes of ``remote`` on the desk (``GET /desks/{id}/files``, at most 256 MB)."""
         if self._api is None:
-            raise UsageError("download_bytes is for the API transport (give api_key); use download() to a local file", kind="usage")
+            raise UsageError("download_bytes is for the HTTP transports (api, local, lan); use download() to a local file", kind="usage")
         return self._api.download_bytes(desk_id, remote)
 
     # jobs

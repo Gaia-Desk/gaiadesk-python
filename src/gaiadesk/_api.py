@@ -384,29 +384,49 @@ def _basename(p: str) -> str:
     return parts[-1] if parts else ""
 
 
+def check_desk_token(desk_token: Optional[str]) -> Optional[str]:
+    """``desk_token`` stripped, or the UsageError for one that is not a non-empty string."""
+    if desk_token is not None and (not isinstance(desk_token, str) or not desk_token.strip()):
+        raise UsageError("desk_token must be a non-empty string (a scoped agent token, gdagt_…)", kind="usage")
+    return desk_token.strip() if desk_token else None
+
+
 class ApiTransport:
-    """Each operation as an HTTPS request. Thread-safe: one connection per request."""
+    """Each operation as an HTTPS request. Thread-safe: one connection per request.
+
+    The HTTP layer is three methods the ``local`` and ``lan`` transports
+    (``_local``) override, the operations being the same: ``headers()`` (the
+    credentials), ``_connection()`` (a fresh ``http.client`` connection) and
+    ``_network_error()`` (what no connection is)."""
+
+    transport = "api"
+    """Which transport this is (``api``, ``local``, ``lan``): the client's ``backend``."""
 
     def __init__(self, api_key: str, desk_token: Optional[str] = None, base_url: Optional[str] = None, wake: Optional[int] = None,
                  timeout: Optional[float] = None) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
             raise UsageError("api_key must be a non-empty string", kind="usage")
-        if desk_token is not None and (not isinstance(desk_token, str) or not desk_token.strip()):
-            raise UsageError("desk_token must be a non-empty string (a scoped agent token, gdagt_…)", kind="usage")
+        self._desk_token = check_desk_token(desk_token)
         if wake is not None and (isinstance(wake, bool) or not isinstance(wake, int) or not 0 <= wake <= 120):
             raise UsageError("wake is whole seconds, 0 to 120", kind="usage")
-        self.base_url = (base_url or DEFAULT_API_URL).rstrip("/")
-        u = urlsplit(self.base_url)
-        if u.scheme not in ("http", "https") or not u.hostname:
-            raise UsageError("base_url must be an http(s) URL: %r" % (base_url,), kind="usage")
-        self._https = u.scheme == "https"
-        self._host = u.hostname
-        self._port = u.port
-        self._prefix = u.path.rstrip("/")
+        self._set_base(base_url or DEFAULT_API_URL, ("http", "https"), "base_url must be an http(s) URL: %r" % (base_url,))
         self._key = api_key.strip()
-        self._desk_token = desk_token.strip() if desk_token else None
         self._wake = wake
         self._timeout = timeout
+
+    def _set_base(self, url: str, schemes: Tuple[str, ...], bad: str) -> None:
+        self.base_url = url.rstrip("/")
+        u = urlsplit(self.base_url)
+        try:
+            port = u.port
+        except ValueError:
+            port = -1
+        if u.scheme not in schemes or not u.hostname or port == -1:
+            raise UsageError(bad, kind="usage")
+        self._https = u.scheme == "https"
+        self._host = u.hostname
+        self._port = port
+        self._prefix = u.path.rstrip("/")
 
     # HTTP
 
@@ -421,6 +441,10 @@ class ApiTransport:
         if self._https:
             return http.client.HTTPSConnection(self._host, self._port, timeout=self._timeout, context=ssl.create_default_context())
         return http.client.HTTPConnection(self._host, self._port, timeout=self._timeout)
+
+    def _network_error(self, e: BaseException, op: str) -> GaiaDeskError:
+        """The error for a request that got no (complete) answer."""
+        return network_error(e, self.base_url, op)
 
     def open(self, method: str, path: str, *, query: Optional[Dict[str, Any]] = None, json: Any = None, body: Any = None,
              length: Optional[int] = None, accept: str = "application/json") -> Tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
@@ -447,7 +471,7 @@ class ApiTransport:
             resp = conn.getresponse()
         except (OSError, http.client.HTTPException) as e:
             conn.close()
-            raise network_error(e, self.base_url, op) from e
+            raise self._network_error(e, op) from e
         if resp.status >= 400:
             try:
                 data = resp.read()
@@ -463,7 +487,7 @@ class ApiTransport:
         try:
             data = resp.read()
         except (OSError, http.client.HTTPException) as e:
-            raise network_error(e, self.base_url, op) from e
+            raise self._network_error(e, op) from e
         finally:
             conn.close()
         try:
@@ -562,7 +586,7 @@ class ApiTransport:
         try:
             return resp.read()
         except (OSError, http.client.HTTPException) as e:
-            raise network_error(e, self.base_url, "GET files") from e
+            raise self._network_error(e, "GET files") from e
         finally:
             conn.close()
 
@@ -582,7 +606,7 @@ class ApiTransport:
                     try:
                         chunk = resp.read(1 << 20)
                     except (OSError, http.client.HTTPException) as e:
-                        raise network_error(e, self.base_url, "GET files") from e
+                        raise self._network_error(e, "GET files") from e
                     if not chunk:
                         break
                     f.write(chunk)
