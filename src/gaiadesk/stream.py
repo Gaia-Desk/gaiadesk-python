@@ -242,7 +242,9 @@ class AsyncCliStream:
 
 
 class _Events:
-    """Turns ``exec --json-stream``'s lines into Chunks; keeps the last ``exit``/``error`` event."""
+    """Turns ``exec --json-stream``'s lines into Chunks; keeps the last ``exit``/``error`` event.
+    Also ``logs --follow --json``'s: ``output`` is stdout, ``end`` / ``interrupted``
+    the end, and an error envelope ``{"error": {...}}`` an ``error`` event."""
 
     def __init__(self) -> None:
         self._dec = codecs.getincrementaldecoder("utf-8")("replace")
@@ -266,8 +268,12 @@ class _Events:
             kind = ev.get("event")
             if kind in ("stdout", "stderr") and isinstance(ev.get("data"), str):
                 out.append(Chunk(kind, ev["data"].encode("utf-8")))
-            elif kind in ("exit", "error"):
+            elif kind == "output" and isinstance(ev.get("data"), str):
+                out.append(Chunk("stdout", ev["data"].encode("utf-8")))
+            elif kind in ("exit", "error", "end", "interrupted"):
                 self.result = ev
+            elif kind is None and isinstance(ev.get("error"), dict):
+                self.result = {"event": "error", "error": ev["error"]}
         return out
 
 

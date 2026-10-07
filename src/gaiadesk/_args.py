@@ -113,12 +113,16 @@ def exec_args(desk_id: str, command: Command, *, stdin: bool, json: bool, json_s
     return a + ["--"] + argv
 
 
-def shell_args(desk_id: str, *, json: bool, **shape: Any) -> List[str]:
-    """``shell --desk-id <id> [flags]`` with a script on stdin (plain pipes, like exec)."""
+def shell_args(desk_id: str, *, json: bool, cwd: Optional[str] = None, **shape: Any) -> List[str]:
+    """``shell --desk-id <id> [flags] [--cwd <dir>]`` with a script on stdin (plain pipes, like exec)."""
     a = ["shell", "--desk-id", check_desk(desk_id), "--quiet"]
     if json:
         a.append("--json")
-    return a + shape_flags(**shape)
+    a += shape_flags(**shape)
+    c = check_cwd(cwd)
+    if c is not None:
+        a += ["--cwd", c]
+    return a
 
 
 def devices_args(probe: bool = False, desk_id: Optional[str] = None) -> List[str]:
@@ -194,10 +198,13 @@ def kill_args(desk_id: str, name: str) -> List[str]:
     return ["kill", check_job_name(name), "--desk-id", check_desk(desk_id), "--json"]
 
 
-def logs_args(desk_id: str, name: str, tail: Optional[int] = None, follow: bool = False) -> List[str]:
+def logs_args(desk_id: str, name: str, tail: Optional[int] = None, follow: bool = False, json: bool = False) -> List[str]:
+    """``logs <job> --desk-id <id> [--follow] [--json] [--tail n]`` (``--json``: 0.10.324+, feature ``logs_json``)."""
     a = ["logs", check_job_name(name), "--desk-id", check_desk(desk_id)]
     if follow:
         a.append("--follow")
+    if json:
+        a.append("--json")
     if tail is not None:
         if isinstance(tail, bool) or not isinstance(tail, int) or tail < 0:
             raise _usage("tail is a number of bytes")
@@ -303,15 +310,23 @@ def forward_args(desk_id: str, specs: Sequence[Dict[str, Any]]) -> List[str]:
     return a
 
 
-def disconnect_args(desk_id: Optional[str] = None) -> List[str]:
-    return ["disconnect", "--all"] if desk_id is None else ["disconnect", "--desk-id", check_desk(desk_id)]
+# ``--json`` on these: gaiadesk-cli 0.10.324+ (``disconnect_json``, ``agent_connect_json``, ``mesh_ip_json``).
 
 
-def agent_connect_args(desk_id: str, server: Optional[str] = None) -> List[str]:
+def disconnect_args(desk_id: Optional[str] = None, json: bool = False) -> List[str]:
+    a = ["disconnect", "--all"] if desk_id is None else ["disconnect", "--desk-id", check_desk(desk_id)]
+    return a + (["--json"] if json else [])
+
+
+def agent_connect_args(desk_id: str, server: Optional[str] = None, json: bool = False) -> List[str]:
     a = ["agent-connect", "--desk-id", check_desk(desk_id)]
     if server:
         a += ["--server", server]
-    return a
+    return a + (["--json"] if json else [])
+
+
+def mesh_ip_args(desk_id: str, json: bool = False) -> List[str]:
+    return ["mesh", "ip", check_desk(desk_id)] + (["--json"] if json else [])
 
 
 def mcp_args(audit_dir: Optional[str] = None, allow_domains: Sequence[str] = (), server: Optional[str] = None) -> List[str]:

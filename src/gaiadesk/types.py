@@ -15,9 +15,7 @@ the package there); the client itself does not import it.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
-
-from typing import TypedDict
+from typing import Union
 
 from .types_generated import *  # noqa: F401,F403
 from .types_generated import (
@@ -28,6 +26,8 @@ from .types_generated import (
     ExecEvent,
     Job,
     Measurement,
+    MintFileResult,
+    MintResult,
 )
 
 # ── The SDK's earlier names for the CLI's shapes ──
@@ -52,11 +52,7 @@ MeasureResult = Measurement
 ExecStreamEvent = ExecEvent
 """One line of ``exec --json-stream`` (``note`` never reaches the CLI's stdout)."""
 
-
-class TokenCreateResult(TypedDict, total=False):
-    """``token create --json``: ``tokens`` (each with its ``secret``), or with
-    ``out`` the entries without it and the ``file`` they were written to.
-    (The ``--out`` form is not in the CLI's schema.)"""
-
-    tokens: List[Dict[str, Any]]
-    file: str
+TokenFileResult = MintFileResult
+"""``token create --out <file> --json``: ``tokens`` (``{desk, token}``, no secret) and the ``file``."""
+TokenCreateResult = Union[MintResult, MintFileResult]
+"""``token create --json``: ``MintResult`` (each token with its ``secret``), or with ``out`` a ``TokenFileResult``."""

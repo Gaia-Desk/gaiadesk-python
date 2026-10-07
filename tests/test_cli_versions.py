@@ -184,6 +184,86 @@ class JsonStream(unittest.TestCase):
         asyncio.run(go())
 
 
+class ShellCwd(unittest.TestCase):
+    def setUp(self):
+        clear_feature_cache()
+
+    def test_shell_passes_cwd(self):
+        gd, calls = helpers.setup(GaiaDesk)
+        r = gd.shell(OK, "make\n", cwd="/srv/app")
+        self.assertIn("cwd: /srv/app", r["stdout"])
+        gd.shell_stream(OK, "make\n", cwd="proj").wait()
+        argvs = [c["argv"] for c in desk_calls(calls)]
+        self.assertEqual(argvs[0], ["shell", "--desk-id", OK, "--quiet", "--json", "--cwd", "/srv/app"])
+        self.assertEqual(argvs[1], ["shell", "--desk-id", OK, "--quiet", "--cwd", "proj"])
+
+    def test_an_old_cli_is_never_sent_shell_cwd(self):
+        gd, calls = helpers.setup(GaiaDesk, old=True)
+        for run in (lambda: gd.shell(OK, "make", cwd="/srv"), lambda: gd.shell_stream(OK, "make", cwd="/srv")):
+            with self.assertRaises(UsageError) as cm:
+                run()
+            self.assertIn("shell_cwd", str(cm.exception))
+        with self.assertRaises(UsageError):
+            gd.shell(OK, "make", cwd=" ")
+        self.assertEqual(desk_calls(calls), [], "nothing ran")
+
+    def test_async(self):
+        async def go():
+            gd, calls = helpers.setup(AsyncGaiaDesk)
+            r = await gd.shell(OK, "make\n", cwd="/w")
+            self.assertIn("cwd: /w", r["stdout"])
+            old, ocalls = helpers.setup(AsyncGaiaDesk, old=True)
+            with self.assertRaises(UsageError):
+                await old.shell_stream(OK, "make", cwd="/w")
+            self.assertEqual(desk_calls(ocalls), [])
+
+        asyncio.run(go())
+
+
+class JsonForms(unittest.TestCase):
+    """logs / mesh ip / disconnect / agent-connect: ``--json`` where the CLI lists it, its text before; the same results."""
+
+    def setUp(self):
+        clear_feature_cache()
+
+    def test_same_results_either_way(self):
+        for old in (False, True):
+            with self.subTest(old=old):
+                gd, calls = helpers.setup(GaiaDesk, old=old, agent_token="gdagt_x")
+                self.assertEqual(gd.job_logs(OK, "build"), "line1\nline2\n")
+                self.assertEqual(gd.job_logs(OK, "build", tail=5), "tail\n")
+                with self.assertRaises(OperationFailedError):
+                    gd.job_logs(OK, "nope")
+                self.assertEqual(text_of_stream(gd.follow_job_logs(OK, "build")), "one\ntwo\nthree\n")
+                self.assertEqual(gd.mesh_ip(OK), "100.64.0.2")
+                with self.assertRaises(OperationFailedError):
+                    gd.mesh_ip(OFFLINE)
+                self.assertEqual(gd.disconnect(OK), {"closed": [OK]})
+                self.assertEqual(gd.agent_connect(OK), "agent session open on desk %s: screenshot 1280x800" % OK)
+                sent_json = ["--json" in c["argv"] for c in desk_calls(calls)]
+                self.assertEqual(set(sent_json), {not old}, "--json only to a CLI that lists it")
+
+    def test_async(self):
+        async def go():
+            gd, calls = helpers.setup(AsyncGaiaDesk, agent_token="gdagt_x")
+            self.assertEqual(await gd.job_logs(OK, "build"), "line1\nline2\n")
+            s = await gd.follow_job_logs(OK, "build")
+            self.assertEqual("".join([t async for n, t in s.text() if n == "stdout"]), "one\ntwo\nthree\n")
+            await s.wait()
+            self.assertEqual(await gd.mesh_ip(OK), "100.64.0.2")
+            self.assertEqual(await gd.disconnect(), {"closed": [OK]})
+            self.assertIn("1280x800", await gd.agent_connect(OK))
+            self.assertTrue(all("--json" in c["argv"] for c in desk_calls(calls)))
+
+        asyncio.run(go())
+
+
+def text_of_stream(s):
+    out = "".join(t for n, t in s.text() if n == "stdout")
+    s.wait()
+    return out
+
+
 class BothClis(unittest.TestCase):
     """The same calls give the same results and errors on either CLI."""
 

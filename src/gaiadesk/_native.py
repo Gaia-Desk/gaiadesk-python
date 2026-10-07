@@ -147,6 +147,12 @@ def none_finish(_r: Any) -> None:
     return None
 
 
+def closed_finish(r: Any) -> Dict[str, Any]:
+    """``disconnect``: ``{"closed": [desk ids]}`` (an older native library returns nothing)."""
+    closed = r.get("closed") if isinstance(r, dict) else None
+    return {"closed": [d for d in closed if isinstance(d, str)] if isinstance(closed, list) else []}
+
+
 # ───────────────────────────── streams ─────────────────────────────
 
 

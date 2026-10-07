@@ -11,6 +11,8 @@ from . import _native as N
 from ._core import (
     FEATURE_EXEC_CWD,
     FEATURE_EXEC_JSON_STREAM,
+    FEATURE_LOGS_JSON,
+    FEATURE_SHELL_CWD,
     VERSION_JSON_ARGS,
     Base,
     Completed,
@@ -22,6 +24,7 @@ from ._core import (
     not_found,
     parse_json,
     store_version_info,
+    upgraded,
     version_info_from,
 )
 from .mcp import McpClient
@@ -38,6 +41,7 @@ if TYPE_CHECKING:  # gaiadesk.types needs typing_extensions before Python 3.11; 
         JobInfo,
         MeasureResult,
         MeshStatus,
+        Disconnected,
         StatsReport,
         TokenCreateResult,
         TokenInfo,
@@ -98,6 +102,8 @@ class GaiaDesk(Base):
         if n is not None and plan.native is not None:
             return n.run_sync(plan.native)
         self._require(plan.requires)
+        if plan.upgrade is not None:
+            plan = upgraded(plan, self.cli_features())
         return plan.finish(self._complete(plan.args, plan.input))
 
     def _require(self, requires: Sequence[Tuple[str, str]]) -> None:
@@ -237,19 +243,25 @@ class GaiaDesk(Base):
         connect_timeout: Optional[A.Duration] = None,
         persist: Optional[A.Duration] = None,
         verbose: bool = False,
+        cwd: Optional[str] = None,
     ) -> "ExecResult":
-        """``shell --json`` with ``script`` on stdin: run in the desk's shell over plain pipes; the script's exit code."""
-        shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose)
+        """``shell --json`` with ``script`` on stdin: run in the desk's shell over plain pipes; the script's exit code.
+        ``cwd``: where it starts on the desk (``--cwd``; gaiadesk-cli 0.10.324+, feature ``shell_cwd``, else a UsageError)."""
+        shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose, cwd=cwd)
         return self._run(self._p_shell(desk_id, script, check, shape))
 
     def shell_stream(self, desk_id: str, script: Optional[str] = None, *, shell: Optional[str] = None,
-                     timeout: Optional[A.Duration] = None, connect_timeout: Optional[A.Duration] = None) -> CliStream:
-        """``shell`` (no --json), streaming. Without ``script``, stdin stays open: ``write()`` lines, then ``end()``."""
-        a = A.shell_args(desk_id, json=False, shell=shell, timeout=timeout, connect_timeout=connect_timeout)
+                     timeout: Optional[A.Duration] = None, connect_timeout: Optional[A.Duration] = None,
+                     cwd: Optional[str] = None) -> CliStream:
+        """``shell`` (no --json), streaming. Without ``script``, stdin stays open: ``write()`` lines, then ``end()``.
+        ``cwd`` as for ``shell``."""
+        a = A.shell_args(desk_id, json=False, shell=shell, timeout=timeout, connect_timeout=connect_timeout, cwd=cwd)
         n = self._nat()
         if n is not None:
-            na = N.shell_stream(desk_id, dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout))
+            na = N.shell_stream(desk_id, dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, cwd=cwd))
             return n.stream_sync("shell", na, script.encode("utf-8") if script is not None else None, script is None)  # type: ignore[return-value]
+        if cwd is not None:
+            self._require([(FEATURE_SHELL_CWD, "shell_stream(cwd=...)")])
         return self._stream(a, script.encode("utf-8") if script is not None else None, keep_open=script is None)
 
     # cp
@@ -280,15 +292,19 @@ class GaiaDesk(Base):
         return self._run(self._p_kill_job(desk_id, name))
 
     def job_logs(self, desk_id: str, name: str, *, tail: Optional[int] = None) -> str:
-        """``logs <job>`` (no --json exists): its output so far, stdout and stderr together."""
+        """``logs <job> --json`` (an older CLI's plain ``logs``): its output so far, stdout and stderr together."""
         return self._run(self._p_job_logs(desk_id, name, tail))
 
     def follow_job_logs(self, desk_id: str, name: str, *, tail: Optional[int] = None) -> CliStream:
-        """``logs -f <job>``: follow until the job ends; ``kill()`` stops following (not the job)."""
+        """``logs -f <job>``: follow until the job ends; ``kill()`` stops following (not the job).
+        On gaiadesk-cli 0.10.324+ (``logs_json``) it runs ``logs -f --json``: the same chunks,
+        and ``result`` (``end``, ``interrupted`` or ``error``) at the end."""
         a = A.logs_args(desk_id, name, tail, follow=True)
         n = self._nat()
         if n is not None:
             return n.stream_sync("job_follow", N.logs(desk_id, name, tail), None, False)  # type: ignore[return-value]
+        if FEATURE_LOGS_JSON in self.cli_features():
+            return JsonExecStream(self._stream(A.logs_args(desk_id, name, tail, follow=True, json=True)))  # type: ignore[return-value]
         return self._stream(a)
 
     # stats / measure
@@ -328,12 +344,12 @@ class GaiaDesk(Base):
         return self._run(self._p_mesh_status())
 
     def mesh_ip(self, desk_id: str) -> str:
-        """``mesh ip <desk>`` (plain text)."""
+        """``mesh ip <desk> --json`` (an older CLI's text): the desk's Mesh address."""
         return self._run(self._p_mesh_ip(desk_id))
 
-    def disconnect(self, desk_id: Optional[str] = None) -> None:
-        """Close the held connection to one desk, or all of them."""
-        self._run(self._p_disconnect(desk_id))
+    def disconnect(self, desk_id: Optional[str] = None) -> "Disconnected":
+        """``disconnect --json``: close the held connection to one desk, or all of them; ``{"closed": [...]}``."""
+        return self._run(self._p_disconnect(desk_id))
 
     # forward
 
@@ -367,12 +383,14 @@ class GaiaDesk(Base):
     # Agent Access (screen)
 
     def agent_connect(self, desk_id: str) -> str:
-        """``agent-connect``: prove an agent token opens a screen session (needs ``agent_token``)."""
-        a = A.agent_connect_args(desk_id, self.server)
+        """``agent-connect``: prove an agent token opens a screen session (needs ``agent_token``).
+        The confirmation line ("agent session open on desk N: screenshot WxH"); from
+        ``agent-connect --json`` on gaiadesk-cli 0.10.324+."""
+        plan = self._p_agent_connect(desk_id)
         n = self._nat()
         if n is not None:
             return n.agent_connect_sync(A.check_desk(desk_id))
-        return self._run(self._p_text(a, strip=True))
+        return self._run(plan)
 
     def mcp(self, *, audit_dir: Optional[str] = None, allow_domains: Sequence[str] = ()) -> McpClient:
         """Start ``gaiadesk-cli mcp`` (stdio): the way to the screen tools from code."""

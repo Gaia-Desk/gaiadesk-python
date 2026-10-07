@@ -4,11 +4,13 @@ $FAKE_LOG so tests can check exactly what the SDK sent.
 
 Two CLIs in one: by default a CLI of 0.10.324 or later (``--version --json``
 with features, one error envelope, ``{"jobs": [...]}``-style lists,
-``exec --json-stream`` and ``--cwd``, ``gaiadesk_*`` MCP tool names). With
+``exec --json-stream``, ``--cwd`` (exec, run, shell), ``--json`` on logs /
+mesh ip / disconnect / agent-connect, ``gaiadesk_*`` MCP tool names). With
 FAKE_CLI=old (or through fake_cli_old.py) a CLI from before it: text
 ``--version``, ``{"error": "<text>"}`` / ``{"refused": "<text>"}``, exec's
 fine-grained error kinds, bare arrays, no ``--cwd`` / ``--json-stream`` (a
-usage error), dotted MCP tool names.
+usage error), text from logs / mesh ip / disconnect / agent-connect, dotted
+MCP tool names.
 
 Desks: 123456789 fine; 234567890 offline; 345678901 the desk refuses;
 desk-usage a usage error; desk-plain a failure told only on stderr.
@@ -24,7 +26,7 @@ argv = sys.argv[1:]
 OK, OFFLINE, REFUSED, USAGE, PLAIN = "123456789", "234567890", "345678901", "desk-usage", "desk-plain"
 DESKS = (OK, OFFLINE, REFUSED, USAGE, PLAIN)
 OLD = os.environ.get("FAKE_CLI") == "old"
-FEATURES = ["json_error_envelope", "json_v1_shapes", "exec_json_stream", "exec_cwd", "run_cwd", "run_verbatim_command", "logs_json",
+FEATURES = ["json_error_envelope", "json_v1_shapes", "exec_json_stream", "exec_cwd", "run_cwd", "shell_cwd", "run_verbatim_command", "logs_json",
             "mesh_ip_json", "disconnect_json", "agent_connect_json", "login_json", "mcp_lifecycle", "mcp_underscore_tool_names",
             "mcp_structured_content"]
 
@@ -214,8 +216,9 @@ def main():
     stdin = sys.stdin.read()
     log(stdin)
     desk = flag("--desk-id") or flag("--desk")
-    if OLD and (has("--cwd") and cmd in ("exec", "run") or has("--json-stream")):
-        err("gaiadesk-cli: unknown option %s" % ("--cwd" if has("--cwd") else "--json-stream"))
+    text_only = cmd in ("logs", "disconnect", "agent-connect") or (cmd == "mesh" and argv[1:2] == ["ip"])
+    if OLD and (has("--cwd") and cmd in ("exec", "run", "shell") or has("--json-stream") or (text_only and has("--json"))):
+        err("gaiadesk-cli: unknown option %s" % next(f for f in ("--cwd", "--json-stream", "--json") if has(f)))
         return 255
     if cmd == "--version":
         if has("--json") and not OLD:
@@ -242,7 +245,7 @@ def main():
         mode = "stream" if has("--json-stream") else ("json" if has("--json") else "plain")
         return exec_like(desk, after_dashes(), stdin if has("--stdin") else "", mode, flag("--cwd"))
     if cmd == "shell":
-        return exec_like(desk, ["script:" + stdin.strip()], "", "json" if has("--json") else "plain")
+        return exec_like(desk, ["script:" + stdin.strip()], "", "json" if has("--json") else "plain", flag("--cwd"))
     if cmd == "cp":
         pos = [a for a in argv[1:] if not a.startswith("-")]
         src, dst = pos
@@ -272,6 +275,20 @@ def main():
         if argv[1] == "nope":
             return failure("failed", "no job named nope", 1, desk=desk)
         out(job(argv[1], state="killed"))
+        return 0
+    if cmd == "logs" and has("--json"):
+        if argv[1] == "nope":
+            return failure("failed", "no job named nope", 1, desk=desk)
+        if has("--follow"):
+            for l in ("one", "two", "three"):
+                out({"event": "output", "data": l + "\n"})
+                time.sleep(0.02)
+            if argv[1] == "lost":
+                return failure("connection_lost", "the connection to the desk was lost", 255, desk=desk)
+            out({"event": "end", "job": job(argv[1], state="exited", exit_code=0)})
+            err("job %s exited (exit 0)" % argv[1])
+            return 0
+        out({"job": job(argv[1]), "output": "tail\n" if flag("--tail") else "line1\nline2\n"})
         return 0
     if cmd == "logs":
         if has("--follow"):
@@ -338,12 +355,18 @@ def main():
             out({"self": {"desk_id": REFUSED, "mesh_ip": "100.64.0.1"}, "peers": [{"desk_id": OK, "mesh_ip": "100.64.0.2", "online": True, "os": "windows"}]})
             return 0
         if argv[2] == OK:
-            out("100.64.0.2")
+            out({"desk_id": OK, "mesh_ip": "100.64.0.2", "renamed_to": None} if has("--json") else "100.64.0.2")
             return 0
+        if has("--json"):
+            return failure("failed", "desk %s is not on this machine's GaiaDesk Mesh" % argv[2], 1, desk=argv[2])
         err("gaiadesk-cli: desk %s is not on this machine's GaiaDesk Mesh" % argv[2])
         return 1
     if cmd == "disconnect":
-        err("gaiadesk-cli: closed the held connection to desk %s" % (desk or "all"))
+        closed = [desk or OK]
+        for d in closed:
+            err("gaiadesk-cli: closed the held connection to desk %s" % d)
+        if has("--json"):
+            out({"closed": closed})
         return 0
     if cmd == "forward":
         pairs = [a for a in argv[1:] if a != "--json"]
@@ -368,9 +391,16 @@ def main():
         return 0
     if cmd == "agent-connect":
         if not os.environ.get("GAIADESK_AGENT_TOKEN"):
+            if has("--json"):
+                return failure("usage", "an agent token is required (--token, or $GAIADESK_AGENT_TOKEN)", 255)
             err("gaiadesk-cli: an agent token is required (--token, or $GAIADESK_AGENT_TOKEN)")
             return 255
-        out("agent session open on desk %s: screenshot 1280x800" % desk)
+        if desk == REFUSED and has("--json"):
+            return failure("refused", "the desk refused the agent session: no `screen` scope", 254, desk=desk)
+        if has("--json"):
+            out({"desk_id": desk, "ok": True, "screenshot": {"width": 1280, "height": 800}})
+        else:
+            out("agent session open on desk %s: screenshot 1280x800" % desk)
         return 0
     err("gaiadesk-cli: unknown subcommand %r" % cmd)
     return 255

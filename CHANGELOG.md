@@ -25,6 +25,18 @@ For `gaiadesk-cli` / `gaiadesk-native` 0.10.324 (older CLIs keep working):
   error's kind). `json_stream=False` keeps the plain byte stream.
 - Feature detection: `cli_version_info()` / `cli_features()`
   (`--version --json`, cached per CLI; an older CLI has none).
+- `job_logs`, `follow_job_logs`, `mesh_ip`, `disconnect` and
+  `agent_connect` use the `--json` forms of 0.10.324 (`logs_json`,
+  `mesh_ip_json`, `disconnect_json`, `agent_connect_json`), so their
+  failures are typed by the error envelope; an older CLI's text is still
+  read. `disconnect()` returns `{"closed": [...]}` (both backends);
+  `follow_job_logs` on such a CLI has `.result` (`end`, `interrupted` or
+  `error`).
+- `cwd=` on `shell` and `shell_stream` (`shell --cwd`, feature `shell_cwd`;
+  an older CLI raises `UsageError`).
+- `create_token` is typed by the generated `MintResult` / `MintFileResult`
+  (`TokenFileResult`, the `out=` form); `TokenCreateResult` is their union
+  instead of a hand-written dict.
 - `jobs()`, `list_tokens()`, `audit()` read `{"jobs": [...]}` /
   `{"tokens": [...]}` / `{"events": [...]}` and older bare arrays; on the
   native backend `job_logs()` and `mesh_ip()` read the library's v2 objects.

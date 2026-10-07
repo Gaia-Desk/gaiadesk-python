@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json as _json
 import os
+import re
 import sys
 import threading
 from dataclasses import dataclass
@@ -30,7 +31,13 @@ from .errors import (
 
 FEATURE_EXEC_CWD = "exec_cwd"
 FEATURE_RUN_CWD = "run_cwd"
+FEATURE_SHELL_CWD = "shell_cwd"
 FEATURE_EXEC_JSON_STREAM = "exec_json_stream"
+# The ``--json`` forms of commands an older CLI answers in text (0.10.324+).
+FEATURE_LOGS_JSON = "logs_json"
+FEATURE_MESH_IP_JSON = "mesh_ip_json"
+FEATURE_DISCONNECT_JSON = "disconnect_json"
+FEATURE_AGENT_CONNECT_JSON = "agent_connect_json"
 
 DOWNLOAD_URL = "https://gaiadesk.net/download"
 
@@ -51,6 +58,16 @@ class Plan(NamedTuple):
     native: Optional[N.NativeReq] = None
     requires: Tuple[Tuple[str, str], ...] = ()
     """``(feature, what)`` pairs the CLI must list in ``--version --json`` for this run (CLI backend only)."""
+    upgrade: Optional[Tuple[str, List[str], Callable[[Completed], Any]]] = None
+    """``(feature, args, finish)``: the run to make instead when the CLI lists ``feature`` (its ``--json`` form)."""
+
+
+def upgraded(plan: Plan, have: FrozenSet[str]) -> Plan:
+    """``plan``, or its ``--json`` form when the CLI has it (``Plan.upgrade``)."""
+    if plan.upgrade is None or plan.upgrade[0] not in have:
+        return plan
+    _feature, args, finish = plan.upgrade
+    return plan._replace(args=args, finish=finish, upgrade=None)
 
 
 def _b(data: Union[None, str, bytes]) -> Optional[bytes]:
@@ -265,6 +282,44 @@ def text_finish(args: Sequence[str], strip: bool = False) -> Callable[[Completed
     return finish
 
 
+def field_finish(args: Sequence[str], key: str) -> Callable[[Completed], Any]:
+    """A ``--json`` object's text field (``logs --json`` -> ``output``, ``mesh ip --json`` -> ``mesh_ip``)."""
+    inner = op_finish(args)
+
+    def finish(done: Completed) -> Any:
+        v = inner(done)
+        if isinstance(v, dict) and isinstance(v.get(key), str):
+            return v[key]
+        raise ProtocolError("gaiadesk-cli printed no %r" % key, kind="protocol", argv=args, json=v)
+
+    return finish
+
+
+def closed_text_finish(args: Sequence[str]) -> Callable[[Completed], Any]:
+    """An older CLI's ``disconnect``: ``{"closed": [...]}`` from its stderr lines."""
+
+    def finish(done: Completed) -> Any:
+        if done.code != 0:
+            raise failure(done, args, None)
+        return {"closed": re.findall(r"closed the held connection to desk (\S+)", done.stderr)}
+
+    return finish
+
+
+def agent_check_finish(args: Sequence[str]) -> Callable[[Completed], Any]:
+    """``agent-connect --json``'s ``{desk_id, ok, screenshot}`` as the CLI's text line."""
+    inner = op_finish(args)
+
+    def finish(done: Completed) -> Any:
+        v = inner(done)
+        shot = v.get("screenshot") if isinstance(v, dict) else None
+        if not isinstance(shot, dict):
+            raise ProtocolError("gaiadesk-cli printed no agent-connect result", kind="protocol", argv=args, json=v)
+        return "agent session open on desk %s: screenshot %sx%s" % (v.get("desk_id"), shot.get("width"), shot.get("height"))
+
+    return finish
+
+
 def none_finish(args: Sequence[str]) -> Callable[[Completed], Any]:
     def finish(done: Completed) -> None:
         if done.code != 0:
@@ -395,8 +450,9 @@ class Base:
 
     def _p_shell(self, desk_id: str, script: str, check: bool, shape: Dict[str, Any]) -> Plan:
         a = A.shell_args(desk_id, json=True, **shape)
+        req = ((FEATURE_SHELL_CWD, "shell(cwd=...)"),) if shape.get("cwd") is not None else ()
         return Plan(a, _b(script), exec_finish(a, check),
-                    N.NativeReq("shell", N.shell(desk_id, script, shape), None, N.exec_finish("shell", check)))
+                    N.NativeReq("shell", N.shell(desk_id, script, shape), None, N.exec_finish("shell", check)), req)
 
     def _p_cp(self, direction: str, desk_id: str, local: str, remote: str, recursive: bool) -> Plan:
         a = A.cp_args(direction, desk_id, local, remote, recursive)
@@ -413,8 +469,9 @@ class Base:
         return Plan(a, None, none_finish(a), native)
 
     def _p_mesh_ip(self, desk_id: str) -> Plan:
-        return self._p_text(["mesh", "ip", A.check_desk(desk_id)], strip=True,
-                            native=N.NativeReq("mesh_ip", N.desk(desk_id), None, N.field_finish("mesh_ip")))
+        a, j = A.mesh_ip_args(desk_id), A.mesh_ip_args(desk_id, json=True)
+        return Plan(a, None, text_finish(a, strip=True), N.NativeReq("mesh_ip", N.desk(desk_id), None, N.field_finish("mesh_ip")),
+                    upgrade=(FEATURE_MESH_IP_JSON, j, field_finish(j, "mesh_ip")))
 
     def _p_mesh_status(self) -> Plan:
         return self._p_op(["mesh", "status", "--json"], native=N.NativeReq("mesh_status", {}))
@@ -435,7 +492,9 @@ class Base:
         return self._p_op(A.kill_args(desk_id, name), native=N.NativeReq("job_kill", N.job(desk_id, name)))
 
     def _p_job_logs(self, desk_id: str, name: str, tail: Optional[int]) -> Plan:
-        return self._p_text(A.logs_args(desk_id, name, tail), native=N.NativeReq("job_logs", N.logs(desk_id, name, tail), None, N.field_finish("output")))
+        a, j = A.logs_args(desk_id, name, tail), A.logs_args(desk_id, name, tail, json=True)
+        return Plan(a, None, text_finish(a), N.NativeReq("job_logs", N.logs(desk_id, name, tail), None, N.field_finish("output")),
+                    upgrade=(FEATURE_LOGS_JSON, j, field_finish(j, "output")))
 
     def _p_stats(self, desk_id: str) -> Plan:
         return self._p_op(A.stats_args(desk_id), native=N.NativeReq("stats", N.desk(desk_id)))
@@ -457,4 +516,12 @@ class Base:
         return self._p_list(A.audit_args(desk_id, token, limit, account), "events", "audit", N.audit(desk_id, token, limit, account))
 
     def _p_disconnect(self, desk_id: Optional[str]) -> Plan:
-        return self._p_none(A.disconnect_args(desk_id), native=N.NativeReq("disconnect", {} if desk_id is None else N.desk(desk_id), None, N.none_finish))
+        a, j = A.disconnect_args(desk_id), A.disconnect_args(desk_id, json=True)
+        native = N.NativeReq("disconnect", {} if desk_id is None else N.desk(desk_id), None, N.closed_finish)
+        json_finish = op_finish(j)
+        return Plan(a, None, closed_text_finish(a), native,
+                    upgrade=(FEATURE_DISCONNECT_JSON, j, lambda done: N.closed_finish(json_finish(done))))
+
+    def _p_agent_connect(self, desk_id: str) -> Plan:
+        a, j = A.agent_connect_args(desk_id, self.server), A.agent_connect_args(desk_id, self.server, json=True)
+        return Plan(a, None, text_finish(a, strip=True), None, upgrade=(FEATURE_AGENT_CONNECT_JSON, j, agent_check_finish(j)))

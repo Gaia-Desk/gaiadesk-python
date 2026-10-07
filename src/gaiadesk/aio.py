@@ -10,6 +10,8 @@ from . import _native as N
 from ._core import (
     FEATURE_EXEC_CWD,
     FEATURE_EXEC_JSON_STREAM,
+    FEATURE_LOGS_JSON,
+    FEATURE_SHELL_CWD,
     VERSION_JSON_ARGS,
     Base,
     Completed,
@@ -21,6 +23,7 @@ from ._core import (
     not_found,
     parse_json,
     store_version_info,
+    upgraded,
     version_info_from,
 )
 from .mcp import AsyncMcpClient
@@ -37,6 +40,7 @@ if TYPE_CHECKING:  # gaiadesk.types needs typing_extensions before Python 3.11; 
         JobInfo,
         MeasureResult,
         MeshStatus,
+        Disconnected,
         StatsReport,
         TokenCreateResult,
         TokenInfo,
@@ -74,6 +78,8 @@ class AsyncGaiaDesk(Base):
         if n is not None and plan.native is not None:
             return await n.run_async(plan.native)
         await self._require(plan.requires)
+        if plan.upgrade is not None:
+            plan = upgraded(plan, await self.cli_features())
         return plan.finish(await self._complete(plan.args, plan.input))
 
     async def _require(self, requires: Sequence[Tuple[str, str]]) -> None:
@@ -162,17 +168,20 @@ class AsyncGaiaDesk(Base):
 
     async def shell(self, desk_id: str, script: str, *, check: bool = False, shell: Optional[str] = None,
                     timeout: Optional[A.Duration] = None, connect_timeout: Optional[A.Duration] = None,
-                    persist: Optional[A.Duration] = None, verbose: bool = False) -> "ExecResult":
-        shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose)
+                    persist: Optional[A.Duration] = None, verbose: bool = False, cwd: Optional[str] = None) -> "ExecResult":
+        shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose, cwd=cwd)
         return await self._run(self._p_shell(desk_id, script, check, shape))
 
     async def shell_stream(self, desk_id: str, script: Optional[str] = None, *, shell: Optional[str] = None,
-                           timeout: Optional[A.Duration] = None, connect_timeout: Optional[A.Duration] = None) -> AsyncCliStream:
-        a = A.shell_args(desk_id, json=False, shell=shell, timeout=timeout, connect_timeout=connect_timeout)
+                           timeout: Optional[A.Duration] = None, connect_timeout: Optional[A.Duration] = None,
+                           cwd: Optional[str] = None) -> AsyncCliStream:
+        a = A.shell_args(desk_id, json=False, shell=shell, timeout=timeout, connect_timeout=connect_timeout, cwd=cwd)
         n = self._nat()
         if n is not None:
-            na = N.shell_stream(desk_id, dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout))
+            na = N.shell_stream(desk_id, dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, cwd=cwd))
             return await n.stream_async("shell", na, script.encode("utf-8") if script is not None else None, script is None)  # type: ignore[return-value]
+        if cwd is not None:
+            await self._require([(FEATURE_SHELL_CWD, "shell_stream(cwd=...)")])
         return await self._stream(a, script.encode("utf-8") if script is not None else None, keep_open=script is None)
 
     async def upload(self, local: str, desk_id: str, remote: str, *, recursive: bool = False) -> "CpSummary":
@@ -200,6 +209,8 @@ class AsyncGaiaDesk(Base):
         n = self._nat()
         if n is not None:
             return await n.stream_async("job_follow", N.logs(desk_id, name, tail), None, False)  # type: ignore[return-value]
+        if FEATURE_LOGS_JSON in await self.cli_features():
+            return AsyncJsonExecStream(await self._stream(A.logs_args(desk_id, name, tail, follow=True, json=True)))  # type: ignore[return-value]
         return await self._stream(a)
 
     async def stats(self, desk_id: str) -> "StatsReport":
@@ -230,8 +241,8 @@ class AsyncGaiaDesk(Base):
     async def mesh_ip(self, desk_id: str) -> str:
         return await self._run(self._p_mesh_ip(desk_id))
 
-    async def disconnect(self, desk_id: Optional[str] = None) -> None:
-        await self._run(self._p_disconnect(desk_id))
+    async def disconnect(self, desk_id: Optional[str] = None) -> "Disconnected":
+        return await self._run(self._p_disconnect(desk_id))
 
     async def forward(self, desk_id: str, specs: Union[Dict[str, Any], Sequence[Dict[str, Any]]]) -> AsyncForward:
         lst = [specs] if isinstance(specs, dict) else list(specs)
@@ -259,11 +270,11 @@ class AsyncGaiaDesk(Base):
         raise failure(Completed(e.exit_code, "", stderr), a, None)
 
     async def agent_connect(self, desk_id: str) -> str:
-        a = A.agent_connect_args(desk_id, self.server)
+        plan = self._p_agent_connect(desk_id)
         n = self._nat()
         if n is not None:
             return await n.agent_connect_async(A.check_desk(desk_id))
-        return await self._run(self._p_text(a, strip=True))
+        return await self._run(plan)
 
     async def mcp(self, *, audit_dir: Optional[str] = None, allow_domains: Sequence[str] = ()) -> AsyncMcpClient:
         return await AsyncMcpClient.start(self.cli + A.mcp_args(audit_dir, allow_domains, self.server), self.environment(), self.cwd)

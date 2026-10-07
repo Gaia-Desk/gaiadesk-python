@@ -99,6 +99,8 @@ class Operations(unittest.TestCase):
             gd.exec(OK, "exit 3", check=True)
         self.assertEqual(c.exception.result["exit"], 3)
         self.assertEqual(gd.shell(OK, "echo hi\n")["stdout"], "ran: script:echo hi\n")
+        gd.shell(OK, "echo hi\n", cwd="/srv/app")
+        self.assertEqual(calls[-1]["args"].get("cwd"), "/srv/app", "shell cwd reaches the native library")
 
     def test_every_other_operation(self):
         gd, calls, _ = native()
@@ -119,8 +121,8 @@ class Operations(unittest.TestCase):
         gd.audit(OK, limit=5)
         gd.mesh_status()
         self.assertEqual(gd.mesh_ip(OK), "100.64.0.1")
-        self.assertIsNone(gd.disconnect(OK))
-        gd.disconnect()
+        self.assertEqual(gd.disconnect(OK), {"closed": [OK]})
+        self.assertEqual(gd.disconnect(), {"closed": []})
         self.assertEqual(gd.version(), "gaiadesk-native 0.10.324")
         by_op = {c["op"]: c["args"] for c in calls}
         self.assertEqual(by_op["job_run"], {"desk_id": OK, "name": "build", "command": "make",
@@ -152,7 +154,7 @@ class Operations(unittest.TestCase):
                 self.assertEqual(gd.audit(OK)[0]["action"], "exec.end")
                 self.assertEqual(gd.job_logs(OK, "build"), "line 1\nline 2\n")
                 self.assertEqual(gd.mesh_ip(OK), "100.64.0.1")
-                self.assertIsNone(gd.disconnect(OK))
+                self.assertEqual(gd.disconnect(OK), {"closed": [] if old else [OK]})
 
     def test_errors_carry_the_envelope(self):
         gd = native()[0]

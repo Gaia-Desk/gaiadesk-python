@@ -317,6 +317,13 @@ class MeshStatus(TypedDict):
     self: NotRequired[Union["MeshSelf", None]]
 
 
+class MintFileResult(TypedDict):
+    """`token create --out <file> --json`: the tokens minted, and the file their
+secrets were written to (0600, one per line)."""
+    file: str
+    tokens: List["MintedTokenFiled"]
+
+
 class MintResult(TypedDict):
     """`token create --json` (several desks: one token each)."""
     tokens: List["MintedToken"]
@@ -335,6 +342,13 @@ class MintedToken(TypedDict):
     """One minted token. `secret` is the token itself — shown once."""
     desk: str
     secret: str
+    token: "TokenInfo"
+
+
+class MintedTokenFiled(TypedDict):
+    """One token written to a file (`token create --out --json`): its desk and
+what it allows — never the secret, which is only in the file."""
+    desk: str
     token: "TokenInfo"
 
 

@@ -156,6 +156,13 @@ class ClientTest(unittest.TestCase):
         out, _ = text_of(s)
         self.assertEqual(out, "one\ntwo\nthree\n")
         self.assertEqual(s.wait().stderr_tail, "job build exited (exit 0)")
+        self.assertEqual(s.result["event"], "end")
+        self.assertIn("--json", self.calls()[-1]["argv"], "logs -f --json on a CLI with logs_json")
+        lost = self.gd.follow_job_logs(OK, "lost")
+        self.assertEqual(text_of(lost)[0], "one\ntwo\nthree\n")
+        e = lost.wait()
+        self.assertEqual((e.exit_code, e.stderr_tail), (255, "the connection to the desk was lost"))
+        self.assertEqual(lost.result["error"]["kind"], "connection_lost")
 
     def test_stats_measure(self):
         self.assertEqual(self.gd.stats(OK)["cpus"], 8)
@@ -189,9 +196,11 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(self.gd.mesh_ip(OK), "100.64.0.2")
         with self.assertRaises(OperationFailedError):
             self.gd.mesh_ip(OFFLINE)
-        self.gd.disconnect(OK)
-        self.gd.disconnect()
-        self.assertEqual([c["argv"] for c in self.calls()][-2:], [["disconnect", "--desk-id", OK], ["disconnect", "--all"]])
+        self.assertEqual(self.gd.disconnect(OFFLINE), {"closed": [OFFLINE]})
+        self.assertEqual(self.gd.disconnect(), {"closed": [OK]})
+        argvs = [c["argv"] for c in self.calls() if c["argv"][0] != "--version"]
+        self.assertEqual(argvs[1], ["mesh", "ip", OK, "--json"])
+        self.assertEqual(argvs[-2:], [["disconnect", "--desk-id", OFFLINE, "--json"], ["disconnect", "--all", "--json"]])
 
     def test_forward(self):
         with self.gd.forward(OK, [{"remote_port": 5432, "local_port": 15432}, {"remote_port": 80, "remote_host": "db.lan"}]) as f:
@@ -204,8 +213,11 @@ class ClientTest(unittest.TestCase):
     def test_agent_connect(self):
         with self.assertRaises(GaiaDeskError):
             self.gd.agent_connect(OK)
-        gd, _ = helpers.setup(GaiaDesk, agent_token="gdagt_x")
-        self.assertIn("screenshot 1280x800", gd.agent_connect(OK))
+        gd, calls = helpers.setup(GaiaDesk, agent_token="gdagt_x")
+        self.assertEqual(gd.agent_connect(OK), "agent session open on desk %s: screenshot 1280x800" % OK)
+        self.assertEqual(calls()[-1]["argv"], ["agent-connect", "--desk-id", OK, "--json"])
+        with self.assertRaises(RefusedError):
+            gd.agent_connect(REFUSED)
 
     def test_mcp(self):
         gd, _ = helpers.setup(GaiaDesk, server="wss://example.invalid/ws")
