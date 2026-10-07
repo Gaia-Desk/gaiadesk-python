@@ -43,6 +43,12 @@ class AsyncClientTest(unittest.TestCase):
             self.assertEqual((await gd.stats(OK))["cpus"], 8)
             self.assertEqual((await gd.list_tokens(OK))[0]["label"], "bot")
             self.assertEqual(await gd.mesh_ip(OK), "100.64.0.2")
+            w = await gd.wait_job(OK, "failing")
+            self.assertEqual((w["timed_out"], w["job"]["exit_code"]), (False, 3))
+            self.assertTrue((await gd.wait_job(OK, "slow", timeout="1m"))["timed_out"])
+            self.assertEqual((await gd.whoami())["source"], "none")
+            self.assertEqual((await gd.run_job(OK, "build", "make", shell="zsh", env={"A": "1"}))["name"], "build")
+            self.assertEqual((await gd.exec(OK, "x", env={"A": "1"}))["exit"], 0)
             # Concurrency: several commands at once.
             rs = await asyncio.gather(*(gd.exec(OK, "exit %d" % i) for i in range(4)))
             self.assertEqual([r["exit"] for r in rs], [0, 1, 2, 3])

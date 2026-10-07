@@ -131,6 +131,28 @@ class Operations(unittest.TestCase):
         self.assertEqual(by_op["token_revoke"]["account"], True)
         self.assertEqual(by_op["job_logs"], {"desk_id": OK, "name": "build", "tail": 100})
 
+    def test_wait_whoami_env_shell(self):
+        gd, calls, _ = native()
+        r = gd.wait_job(OK, "build")
+        self.assertEqual((r["timed_out"], r["job"]["exit_code"]), (False, 0))
+        self.assertTrue(gd.wait_job(OK, "slow", timeout=30)["timed_out"])
+        with self.assertRaises(OperationFailedError):
+            gd.wait_job(OK, "nope")
+        self.assertEqual(gd.whoami(), {"source": "app", "account": "you@example.com"})
+        gd.exec(OK, "make", env={"CI": "1"})
+        gd.run_job(OK, "build", "make", shell="bash", env={"JOBS": "8"})
+        s = gd.exec_stream(OK, "make", env={"CI": "1"})
+        self.assertEqual(s.wait().exit_code, 0)
+        waits = [c["args"] for c in calls if c["op"] == "job_wait"]
+        self.assertEqual(waits[:2], [{"desk_id": OK, "name": "build"}, {"desk_id": OK, "name": "slow", "timeout": "30"}])
+        by_op = {c["op"]: c["args"] for c in calls}
+        self.assertEqual(by_op["whoami"], {})
+        self.assertEqual(by_op["exec"]["env"], {"CI": "1"})
+        self.assertEqual(by_op["job_run"], {"desk_id": OK, "name": "build", "command": "make", "limits": {}, "shell": "bash", "env": {"JOBS": "8"}})
+        self.assertEqual(by_op["stream:exec"]["env"], {"CI": "1"})
+        with self.assertRaises(UsageError):
+            gd.exec(OK, "make", env={"A B": "x"})
+
     def test_cwd(self):
         gd, calls, _ = native()
         self.assertIn("cwd: /srv/app", gd.exec(OK, "make", cwd="/srv/app")["stdout"])

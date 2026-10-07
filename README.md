@@ -187,15 +187,17 @@ Every result is the CLI's JSON, with the CLI's field names (types in
 | `version()` | `--version` | `"gaiadesk-cli X.Y.Z"` |
 | `cli_version_info()` | `--version --json` | `{name, version, features[], mcp_protocol_versions[]}`, or `None` from a CLI too old to answer it |
 | `cli_features()` | `--version --json` | a frozenset (`exec_json_stream`, `exec_cwd`, `run_cwd`, ...) |
-| `devices(probe=, desk_id=)` | `devices --json [--probe] [-d]` | `{devices[], sources[], notes[]}`; with `probe`, unreachable desks have `reachable: False` |
+| `whoami()` | `whoami --json` | `{source, account}`: `source` is `app`, `login`, `token` or `none` (not signed in: a result, not an error) |
+| `devices(probe=, desk_id=)` | `devices --json [--probe] [-d]` | `{devices[], sources[], notes[], identity}`; with `probe`, unreachable desks have `reachable: False` |
 | `probe(desk_id)` | `devices --probe -d` | one device row with `probe` |
-| `exec(desk_id, command, cwd=, **opts)` | `exec --json [--cwd]` | `{exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}` |
-| `exec_stream(desk_id, command, cwd=, json_stream=, **opts)` | `exec --json-stream` (`json_stream=False`: `exec`) | a stream of stdout/stderr chunks, then the exit code (and, with events, `result`) |
+| `exec(desk_id, command, cwd=, env=, **opts)` | `exec --json [--cwd] [--env K=V]...` | `{exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}` |
+| `exec_stream(desk_id, command, cwd=, env=, json_stream=, **opts)` | `exec --json-stream` (`json_stream=False`: `exec`) | a stream of stdout/stderr chunks, then the exit code (and, with events, `result`) |
 | `shell(desk_id, script, **opts)` | `shell --json [--cwd]`, script on stdin | as `exec` |
 | `shell_stream(desk_id, script=None, **opts)` | `shell [--cwd]` | stream; without a script, stdin stays open for `write()`/`end()` |
 | `upload(local, desk_id, remote, recursive=)` | `cp --json <local> <desk>:<remote>` | `{direction, desk, destination, files, dirs, bytes, resumed_bytes, failed[], seconds}` |
 | `download(desk_id, remote, local, recursive=)` | `cp --json <desk>:<remote> <local>` | as above |
-| `run_job(desk_id, name, command, cwd=, priority=, cpu=, mem=, keep_awake=)` | `run --detach --json [--cwd]` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement}` |
+| `run_job(desk_id, name, command, cwd=, shell=, env=, priority=, cpu=, mem=, keep_awake=)` | `run --detach --json [--cwd] [--shell] [--env K=V]...` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement, reason}` |
+| `wait_job(desk_id, name, timeout=)` | `wait <job> --json [--timeout]` | `{job, timed_out}`: the job as it ended (its `exit_code` is a result, not an error), or, `timed_out`, as it stands, still running |
 | `jobs(desk_id)` | `ps --json` | job list (from `{"jobs": [...]}`) |
 | `job_logs(desk_id, name, tail=)` | `logs --json` | output text (the `output` of `{job, output}`) |
 | `follow_job_logs(desk_id, name)` | `logs -f --json` | stream; `.result` is the `end` / `interrupted` / `error` event |
@@ -215,12 +217,19 @@ Every result is the CLI's JSON, with the CLI's field names (types in
 | `raw(args, input=)` | anything | `Completed(code, stdout, stderr)`: the escape hatch |
 
 `exec`/`shell` options: `shell` (`"default"` \| `"none"` \| `"sh"` \|
-`"cmd"` \| `"pwsh"`), `timeout` (seconds or `"10m"`; `0` = none; CLI
+`"bash"` \| `"zsh"` \| `"cmd"` \| `"pwsh"`; `run_job` takes the same but
+`default`/`none`), `timeout` (seconds or `"10m"`; `0` = none; CLI
 default 30m), `connect_timeout` (default 60s), `persist`, `verbose`,
 `stdin` (str or bytes; default closed; `exec_stream(stdin=True)` keeps it
 open), `check` (raise `CommandError` on a non-zero exit), `cwd` (`exec`,
 `exec_stream`, `run_job`: the directory it starts in on the desk; relative
-paths are from the desk user's home, or from a confined token's folder).
+paths are from the desk user's home, or from a confined token's folder),
+`env` (`exec`, `exec_stream`, `run_job`: `{NAME: value}`, environment
+variables for the command, never logged by the desk; through gaiadesk-cli
+they are `--env` arguments of its process on this machine, the native
+backend passes them in-process). A program Windows Smart App Control / WDAC
+refused to start is `error["reason"] == "blocked_by_os_policy"` in an exec
+result, and a job's `reason` (its `state` then says so in words).
 
 **Feature detection.** The SDK asks `gaiadesk-cli --version --json` what it
 can do, once per CLI (its path, size and modification time) per process,

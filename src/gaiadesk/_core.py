@@ -290,6 +290,21 @@ def agent_check_finish(args: Sequence[str]) -> Callable[[Completed], Any]:
     return finish
 
 
+def wait_finish(args: Sequence[str]) -> Callable[[Completed], Any]:
+    """``wait --json``: the job, and the exit code is the JOB's (124: --timeout ran
+    out with the job still running). ``{job, timed_out}``, as the native library."""
+
+    def finish(done: Completed) -> Any:
+        parsed = parse_json(done.stdout)
+        if isinstance(parsed, dict) and error_envelope(parsed) is None and isinstance(parsed.get("name"), str):
+            return {"job": parsed, "timed_out": done.code == 124 and parsed.get("state") == "running"}
+        if done.code == 0 and parsed is None:
+            raise ProtocolError("gaiadesk-cli printed no job", exit_code=0, stderr=done.stderr, argv=args, kind="protocol")
+        raise failure(done, args, parsed)
+
+    return finish
+
+
 def none_finish(args: Sequence[str]) -> Callable[[Completed], Any]:
     def finish(done: Completed) -> None:
         if done.code != 0:
@@ -453,6 +468,14 @@ class Base:
     def _p_list(self, a: List[str], key: str, op: str, nargs: Dict[str, Any]) -> Plan:
         """``ps`` / ``token list`` / ``audit``: the list in ``{"<key>": [...]}``."""
         return Plan(a, None, list_finish(a, key), N.NativeReq(op, nargs, None, unwrap_list(key, [op])))
+
+    def _p_wait_job(self, desk_id: str, name: str, timeout: Optional[A.Duration]) -> Plan:
+        a = A.wait_args(desk_id, name, timeout)
+        return Plan(a, None, wait_finish(a), N.NativeReq("job_wait", N.wait_job(desk_id, name, timeout)))
+
+    def _p_whoami(self) -> Plan:
+        a = A.whoami_args()
+        return self._p_op(a, (0, 1), native=N.NativeReq("whoami", {}))
 
     def _p_jobs(self, desk_id: str) -> Plan:
         return self._p_list(A.ps_args(desk_id), "jobs", "job_list", N.desk(desk_id))

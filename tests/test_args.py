@@ -25,6 +25,27 @@ class ArgsTest(unittest.TestCase):
             with self.assertRaises(UsageError):
                 A.exec_args("1", "x", stdin=False, json=True, cwd=bad)
 
+    def test_env(self):
+        self.assertEqual(A.exec_args("1", "make", stdin=False, json=True, env={"CI": "1", "MSG": "a b=c"}, shell="bash"),
+                         ["exec", "--desk-id", "1", "--quiet", "--json", "--no-stdin", "--env", "CI=1", "--env", "MSG=a b=c",
+                          "--shell", "bash", "--", "make"])
+        self.assertEqual(A.exec_args("1", "x", stdin=False, json=True, env={}), A.exec_args("1", "x", stdin=False, json=True))
+        for bad in ({"": "x"}, {"A=B": "x"}, {"A B": "x"}, {"A": 1}, {"A": "x\0y"}, ["A=1"]):
+            with self.assertRaises(UsageError) as cm:
+                A.exec_args("1", "x", stdin=False, json=True, env=bad)
+            self.assertNotIn("x\0y", str(cm.exception), "an error never shows a value")
+        for s in ("bash", "zsh"):
+            self.assertIn(s, A.exec_args("1", "x", stdin=False, json=True, shell=s))
+
+    def test_wait_and_whoami(self):
+        self.assertEqual(A.wait_args("1", "build"), ["wait", "build", "--desk-id", "1", "--json"])
+        self.assertEqual(A.wait_args("1", "build", timeout="10m"), ["wait", "build", "--desk-id", "1", "--timeout", "10m", "--json"])
+        self.assertEqual(A.wait_args("1", "build", timeout=1.5)[4:6], ["--timeout", "2"])
+        for bad in (dict(name="-x"), dict(timeout=-1)):
+            with self.assertRaises(UsageError):
+                A.wait_args("1", **dict(dict(name="b"), **bad))
+        self.assertEqual(A.whoami_args(), ["whoami", "--json"])
+
     def test_durations(self):
         a = A.exec_args("1", "x", stdin=False, json=True, timeout=1.2, connect_timeout="90s", persist=0, verbose=True)
         self.assertEqual(a[6:-2], ["--timeout", "2", "--connect-timeout", "90s", "--persist", "0", "--verbose"])
@@ -56,6 +77,11 @@ class ArgsTest(unittest.TestCase):
                          ["run", "--detach", "--name", "build", "--desk-id", "234567890", "--priority", "low", "--cpu", "50", "--mem", "4G",
                           "--keep-awake", "--json", "--", "msbuild app.sln /m"])
         self.assertIn("--no-keep-awake", A.run_args("1", "b", ["./build.sh"], keep_awake=False))
+        self.assertEqual(A.run_args("1", "b", "make", shell="pwsh", env={"CONFIG": "Release"}),
+                         ["run", "--detach", "--name", "b", "--desk-id", "1", "--shell", "pwsh", "--env", "CONFIG=Release", "--json", "--", "make"])
+        for bad in ("none", "default", "fish"):
+            with self.assertRaises(UsageError):
+                A.run_args("1", "b", "make", shell=bad)
         self.assertEqual(A.run_args("1", "b", "make", cwd="C:\\src"), ["run", "--detach", "--name", "b", "--desk-id", "1", "--cwd", "C:\\src", "--json", "--", "make"])
         for kw in (dict(name="-x"), dict(cpu=0), dict(priority="urgent")):
             name = kw.pop("name", "b")

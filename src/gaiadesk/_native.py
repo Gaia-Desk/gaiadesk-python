@@ -12,8 +12,10 @@ knows the extension's surface, which is small and generic:
     ``{"error": {kind, message, reason?, desk?}}``)
 
 Results are the CLI's ``--json`` shapes (``job_list`` ``{jobs}``,
-``job_logs`` ``{job, output}``, ...); exec/shell (call and stream) and
-job_run take an optional ``cwd``.
+``job_logs`` ``{job, output}``, ``job_wait`` ``{job, timed_out}``, ``whoami``
+``{source, account}``, ...); exec/shell (call and stream) and job_run take an
+optional ``cwd``; exec (call and stream) and job_run an ``env`` ``{NAME: value}``,
+job_run a ``shell``.
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ from ._native_args import (  # noqa: F401  (the plans in _core build their nativ
     shell_stream,
     token_create,
     token_revoke,
+    wait_job,
 )
 
 def load_native(importer: Callable[[str], Any] = importlib.import_module) -> Tuple[Any, str]:

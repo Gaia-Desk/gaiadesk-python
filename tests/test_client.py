@@ -151,6 +151,41 @@ class ClientTest(unittest.TestCase):
         with self.assertRaises(OperationFailedError):
             self.gd.kill_job(OK, "nope")
 
+    def test_env_and_job_shell(self):
+        self.gd.exec(OK, "make", env={"CI": "1"})
+        self.assertEqual(self.calls()[0]["argv"], ["exec", "--desk-id", OK, "--quiet", "--json", "--no-stdin", "--env", "CI=1", "--", "make"])
+        self.assertEqual(self.gd.run_job(OK, "build", "make", shell="bash", env={"JOBS": "8"})["state"], "running")
+        self.assertEqual(self.calls()[-1]["argv"][6:10], ["--shell", "bash", "--env", "JOBS=8"])
+        s = self.gd.exec_stream(OK, "make", env={"CI": "1"})
+        self.assertEqual(s.wait().exit_code, 0)
+        self.assertIn("CI=1", self.calls()[-1]["argv"])
+        with self.assertRaises(UsageError):
+            self.gd.run_job(OK, "build", "make", shell="none")
+
+    def test_wait_job(self):
+        r = self.gd.wait_job(OK, "build")
+        self.assertEqual((r["timed_out"], r["job"]["state"], r["job"]["exit_code"]), (False, "exited", 0))
+        self.assertEqual(self.calls()[-1]["argv"], ["wait", "build", "--desk-id", OK, "--json"])
+        r = self.gd.wait_job(OK, "failing")
+        self.assertEqual((r["timed_out"], r["job"]["exit_code"]), (False, 3), "the job's own failure is a result")
+        r = self.gd.wait_job(OK, "slow", timeout=5)
+        self.assertEqual((r["timed_out"], r["job"]["state"]), (True, "running"))
+        self.assertEqual(self.calls()[-1]["argv"][4:6], ["--timeout", "5"])
+        r = self.gd.wait_job(OK, "blocked")
+        self.assertEqual((r["timed_out"], r["job"]["reason"]), (False, "blocked_by_os_policy"))
+        with self.assertRaises(OperationFailedError) as cm:
+            self.gd.wait_job(OK, "nope")
+        self.assertEqual(str(cm.exception), "no job named nope")
+        with self.assertRaises(RefusedError):
+            self.gd.wait_job(REFUSED, "build")
+
+    def test_whoami(self):
+        self.assertEqual(self.gd.whoami(), {"source": "none", "account": None}, "nobody signed in is an answer (exit 1), not an error")
+        gd, calls = helpers.setup(GaiaDesk, account_token="acct")
+        self.assertEqual(gd.whoami(), {"source": "token", "account": "bot@example.com"})
+        self.assertEqual(calls()[0]["argv"], ["whoami", "--json"])
+        self.assertEqual(gd.devices()["identity"]["source"], "token")
+
     def test_follow_logs(self):
         s = self.gd.follow_job_logs(OK, "build")
         out, _ = text_of(s)

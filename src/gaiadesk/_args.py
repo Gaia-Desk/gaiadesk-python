@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from .errors import UsageError
 
-SHELLS = ("default", "none", "sh", "cmd", "pwsh")
+SHELLS = ("default", "none", "sh", "bash", "zsh", "cmd", "pwsh")
+JOB_SHELLS = ("sh", "bash", "zsh", "cmd", "pwsh")
 Duration = Union[int, float, str]
 Command = Union[str, Sequence[str]]
 
@@ -94,8 +95,37 @@ def check_cwd(cwd: Optional[str]) -> Optional[str]:
     return cwd
 
 
+def check_env(env: Optional[Mapping[str, str]]) -> Optional[Dict[str, str]]:
+    """``env``: environment variables for the command on the desk, ``{NAME: value}``.
+    A name is non-empty, without ``=``, whitespace or NUL; a value is a str without NUL.
+    Errors name the variable, never its value."""
+    if env is None:
+        return None
+    if not isinstance(env, Mapping):
+        raise _usage("env is a mapping of variable names to values")
+    out: Dict[str, str] = {}
+    for k, v in env.items():
+        if not isinstance(k, str) or not k or "=" in k or "\0" in k or re.search(r"\s", k):
+            raise _usage("env: %r is not an environment variable name" % (k,))
+        if not isinstance(v, str):
+            raise _usage("env: the value of %s must be a str" % k)
+        if "\0" in v:
+            raise _usage("env: the value of %s contains a NUL byte" % k)
+        out[k] = v
+    return out
+
+
+def env_flags(env: Optional[Mapping[str, str]]) -> List[str]:
+    """``--env KEY=VALUE`` per variable (exec, run). The values are in gaiadesk-cli's
+    argv on this machine (the native backend passes them in-process instead)."""
+    a: List[str] = []
+    for k, v in (check_env(env) or {}).items():
+        a += ["--env", "%s=%s" % (k, v)]
+    return a
+
+
 def exec_args(desk_id: str, command: Command, *, stdin: bool, json: bool, json_stream: bool = False,
-              cwd: Optional[str] = None, **shape: Any) -> List[str]:
+              cwd: Optional[str] = None, env: Optional[Mapping[str, str]] = None, **shape: Any) -> List[str]:
     """``exec --desk-id <id> [flags] -- <command>``. A str is ONE command line; a list is separate arguments."""
     argv = _argv(command, "exec")
     if json and json_stream:
@@ -109,6 +139,7 @@ def exec_args(desk_id: str, command: Command, *, stdin: bool, json: bool, json_s
     c = check_cwd(cwd)
     if c is not None:
         a += ["--cwd", c]
+    a += env_flags(env)
     a += shape_flags(**shape)
     return a + ["--"] + argv
 
@@ -166,13 +197,20 @@ def run_args(
     mem: Optional[Union[int, str]] = None,
     keep_awake: Optional[bool] = None,
     cwd: Optional[str] = None,
+    shell: Optional[str] = None,
+    env: Optional[Mapping[str, str]] = None,
 ) -> List[str]:
-    """``run --detach --name <job> --desk-id <id> [--cwd <dir>] [caps] --json -- <command>``."""
+    """``run --detach --name <job> --desk-id <id> [--cwd <dir>] [--shell <s>] [--env K=V]... [caps] --json -- <command>``."""
     argv = _argv(command, "run")
     a = ["run", "--detach", "--name", check_job_name(name), "--desk-id", check_desk(desk_id)]
     c = check_cwd(cwd)
     if c is not None:
         a += ["--cwd", c]
+    if shell is not None:
+        if shell not in JOB_SHELLS:
+            raise _usage("a job's shell is one of " + ", ".join(JOB_SHELLS))
+        a += ["--shell", shell]
+    a += env_flags(env)
     if priority is not None:
         if priority not in ("low", "normal", "high"):
             raise _usage("priority is low, normal or high")
@@ -188,6 +226,18 @@ def run_args(
     elif keep_awake is False:
         a.append("--no-keep-awake")
     return a + ["--json", "--"] + argv
+
+
+def wait_args(desk_id: str, name: str, timeout: Optional[Duration] = None) -> List[str]:
+    """``wait <job> --desk-id <id> [--timeout <dur>] --json``."""
+    a = ["wait", check_job_name(name), "--desk-id", check_desk(desk_id)]
+    if timeout is not None:
+        a += ["--timeout", duration(timeout, "--timeout")]
+    return a + ["--json"]
+
+
+def whoami_args() -> List[str]:
+    return ["whoami", "--json"]
 
 
 def ps_args(desk_id: str) -> List[str]:

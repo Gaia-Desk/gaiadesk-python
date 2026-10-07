@@ -35,7 +35,9 @@ if TYPE_CHECKING:  # gaiadesk.types needs typing_extensions before Python 3.11; 
         DevicesResult,
         ExecResult,
         ForwardListening,
+        Identity,
         JobInfo,
+        JobWaitResult,
         MeasureResult,
         MeshStatus,
         Disconnected,
@@ -143,6 +145,11 @@ class GaiaDesk(Base):
         """What this gaiadesk-cli can do (``exec_cwd``, ``run_cwd``, ``shell_cwd``, ...)."""
         return features_of(self.cli_version_info())
 
+    def whoami(self) -> "Identity":
+        """``whoami --json``: who this machine is signed in as, ``{source: app|login|token|none, account}``
+        (``source == "none"``: not signed in; not an error)."""
+        return self._run(self._p_whoami())
+
     # devices
 
     def devices(self, *, probe: bool = False, desk_id: Optional[str] = None) -> "DevicesResult":
@@ -176,6 +183,7 @@ class GaiaDesk(Base):
         persist: Optional[A.Duration] = None,
         verbose: bool = False,
         cwd: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
     ) -> "ExecResult":
         """``exec --json``: run ONE command; its exit code, stdout and stderr.
 
@@ -183,8 +191,11 @@ class GaiaDesk(Base):
         separate arguments. A non-zero exit is a result unless ``check=True``.
         Raises when the command never ran. ``cwd``: the directory it starts in on
         the desk (``--cwd``; a CLI without the ``exec_cwd`` feature is a UsageError).
+        ``env``: environment variables for the command, ``{NAME: value}`` (``--env``;
+        never logged by the desk). A program Windows Smart App Control / WDAC
+        blocked is ``error.reason == "blocked_by_os_policy"``.
         """
-        shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose, cwd=cwd)
+        shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose, cwd=cwd, env=env)
         return self._run(self._p_exec(desk_id, command, stdin, check, shape))
 
     def exec_stream(
@@ -199,25 +210,27 @@ class GaiaDesk(Base):
         persist: Optional[A.Duration] = None,
         cwd: Optional[str] = None,
         json_stream: Optional[bool] = None,
+        env: Optional[Dict[str, str]] = None,
     ) -> CliStream:
         """``exec``, streaming. ``stdin=True`` keeps stdin open for ``write()``/``end()``.
 
         The stream is built from ``exec --json-stream``'s events: the output as
         text, and ``result`` (route, shell, an error's kind, ...) at the end.
         ``json_stream=False`` runs plain ``exec`` instead (the exact bytes; no ``result``).
+        ``env`` as for ``exec``.
         """
-        A.exec_args(desk_id, command, stdin=False, json=False, cwd=cwd,
+        A.exec_args(desk_id, command, stdin=False, json=False, cwd=cwd, env=env,
                     shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)  # validate first
         data = None if stdin is None or isinstance(stdin, bool) else (stdin.encode("utf-8") if isinstance(stdin, str) else stdin)
         n = self._nat()
         if n is not None:
-            shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, cwd=cwd)
+            shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, cwd=cwd, env=env)
             return n.stream_sync("exec", N.exec_(desk_id, command, shape), data, stdin is True)  # type: ignore[return-value]
         if cwd is not None:
             self._require([(FEATURE_EXEC_CWD, "exec_stream(cwd=...)")])
         use_events = json_stream is not False
         a = A.exec_args(desk_id, command, stdin=stdin is not None and stdin is not False, json=False, json_stream=use_events,
-                        cwd=cwd, shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
+                        cwd=cwd, env=env, shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
         s = self._stream(a, data, keep_open=stdin is True)
         return JsonExecStream(s) if use_events else s  # type: ignore[return-value]
 
@@ -267,10 +280,19 @@ class GaiaDesk(Base):
 
     def run_job(self, desk_id: str, name: str, command: A.Command, *, priority: Optional[str] = None,
                 cpu: Optional[int] = None, mem: Union[None, int, str] = None, keep_awake: Optional[bool] = None,
-                cwd: Optional[str] = None) -> "JobInfo":
+                cwd: Optional[str] = None, shell: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> "JobInfo":
         """``run --detach --json``: a named background job that outlives this connection.
-        ``cwd``: the directory it starts in on the desk (``--cwd``; a CLI without the ``run_cwd`` feature is a UsageError)."""
-        return self._run(self._p_run_job(desk_id, name, command, dict(priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake, cwd=cwd)))
+        ``cwd``: the directory it starts in on the desk (``--cwd``; a CLI without the ``run_cwd`` feature is a UsageError).
+        ``shell``: ``sh``, ``bash``, ``zsh``, ``cmd`` or ``pwsh`` runs the command (``--shell``; default
+        ``sh -c`` / ``cmd /c``). ``env``: environment variables for the job, ``{NAME: value}`` (``--env``)."""
+        return self._run(self._p_run_job(desk_id, name, command, dict(priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake, cwd=cwd,
+                                                                      shell=shell, env=env)))
+
+    def wait_job(self, desk_id: str, name: str, *, timeout: Optional[A.Duration] = None) -> "JobWaitResult":
+        """``wait <job> --json``: block until the job ends; ``{job, timed_out}``.
+        ``timeout`` (seconds or ``"10m"``): give up then, ``timed_out`` True and the job still
+        running. A job that ended with a non-zero exit code is a result (``job["exit_code"]``), not an error."""
+        return self._run(self._p_wait_job(desk_id, name, timeout))
 
     def jobs(self, desk_id: str) -> "List[JobInfo]":
         """``ps --json``: the jobs (the list in ``{"jobs": [...]}``)."""

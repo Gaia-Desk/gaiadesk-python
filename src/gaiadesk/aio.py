@@ -34,7 +34,9 @@ if TYPE_CHECKING:  # gaiadesk.types needs typing_extensions before Python 3.11; 
         DevicesResult,
         ExecResult,
         ForwardListening,
+        Identity,
         JobInfo,
+        JobWaitResult,
         MeasureResult,
         MeshStatus,
         Disconnected,
@@ -117,6 +119,10 @@ class AsyncGaiaDesk(Base):
     async def cli_features(self) -> FrozenSet[str]:
         return features_of(await self.cli_version_info())
 
+    async def whoami(self) -> "Identity":
+        """As ``GaiaDesk.whoami``: ``{source, account}``."""
+        return await self._run(self._p_whoami())
+
     async def devices(self, *, probe: bool = False, desk_id: Optional[str] = None) -> "DevicesResult":
         return await self._run(self._p_devices(probe, desk_id))
 
@@ -133,27 +139,29 @@ class AsyncGaiaDesk(Base):
 
     async def exec(self, desk_id: str, command: A.Command, *, stdin: Union[None, str, bytes] = None, check: bool = False,
                    shell: Optional[str] = None, timeout: Optional[A.Duration] = None, connect_timeout: Optional[A.Duration] = None,
-                   persist: Optional[A.Duration] = None, verbose: bool = False, cwd: Optional[str] = None) -> "ExecResult":
-        shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose, cwd=cwd)
+                   persist: Optional[A.Duration] = None, verbose: bool = False, cwd: Optional[str] = None,
+                   env: Optional[Dict[str, str]] = None) -> "ExecResult":
+        shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose, cwd=cwd, env=env)
         return await self._run(self._p_exec(desk_id, command, stdin, check, shape))
 
     async def exec_stream(self, desk_id: str, command: A.Command, *, stdin: Union[None, str, bytes, bool] = None,
                           shell: Optional[str] = None, timeout: Optional[A.Duration] = None,
                           connect_timeout: Optional[A.Duration] = None, persist: Optional[A.Duration] = None,
-                          cwd: Optional[str] = None, json_stream: Optional[bool] = None) -> AsyncCliStream:
+                          cwd: Optional[str] = None, json_stream: Optional[bool] = None,
+                          env: Optional[Dict[str, str]] = None) -> AsyncCliStream:
         """As ``GaiaDesk.exec_stream``: ``exec --json-stream`` events (plain ``exec`` with ``json_stream=False``)."""
-        A.exec_args(desk_id, command, stdin=False, json=False, cwd=cwd,
+        A.exec_args(desk_id, command, stdin=False, json=False, cwd=cwd, env=env,
                     shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)  # validate first
         data = None if stdin is None or isinstance(stdin, bool) else (stdin.encode("utf-8") if isinstance(stdin, str) else stdin)
         n = self._nat()
         if n is not None:
-            shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, cwd=cwd)
+            shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, cwd=cwd, env=env)
             return await n.stream_async("exec", N.exec_(desk_id, command, shape), data, stdin is True)  # type: ignore[return-value]
         if cwd is not None:
             await self._require([(FEATURE_EXEC_CWD, "exec_stream(cwd=...)")])
         use_events = json_stream is not False
         a = A.exec_args(desk_id, command, stdin=stdin is not None and stdin is not False, json=False, json_stream=use_events,
-                        cwd=cwd, shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
+                        cwd=cwd, env=env, shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
         s = await self._stream(a, data, keep_open=stdin is True)
         return AsyncJsonExecStream(s) if use_events else s  # type: ignore[return-value]
 
@@ -183,8 +191,13 @@ class AsyncGaiaDesk(Base):
 
     async def run_job(self, desk_id: str, name: str, command: A.Command, *, priority: Optional[str] = None,
                       cpu: Optional[int] = None, mem: Union[None, int, str] = None, keep_awake: Optional[bool] = None,
-                      cwd: Optional[str] = None) -> "JobInfo":
-        return await self._run(self._p_run_job(desk_id, name, command, dict(priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake, cwd=cwd)))
+                      cwd: Optional[str] = None, shell: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> "JobInfo":
+        return await self._run(self._p_run_job(desk_id, name, command, dict(priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake, cwd=cwd,
+                                                                            shell=shell, env=env)))
+
+    async def wait_job(self, desk_id: str, name: str, *, timeout: Optional[A.Duration] = None) -> "JobWaitResult":
+        """As ``GaiaDesk.wait_job``: ``{job, timed_out}`` once the job ends (or ``timeout`` runs out)."""
+        return await self._run(self._p_wait_job(desk_id, name, timeout))
 
     async def jobs(self, desk_id: str) -> "List[JobInfo]":
         return await self._run(self._p_jobs(desk_id))

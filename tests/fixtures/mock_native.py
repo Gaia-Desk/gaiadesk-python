@@ -150,6 +150,17 @@ def make_mock():
             if op == "job_run":
                 _reach(d)
                 return {"name": args["name"], "command": args["command"], "state": "running", "pid": 4242, "started_at_ms": 1, "log_bytes": 0, "by": "owner"}
+            if op == "job_wait":
+                _reach(d)
+                if args["name"] == "nope":
+                    raise _error("no job named nope", "failed", None, d)
+                running = args["name"] == "slow" and "timeout" in args
+                j = {"name": args["name"], "command": "make", "state": "running" if running else "exited", "started_at_ms": 1}
+                if not running:
+                    j["exit_code"] = 0
+                return {"job": j, "timed_out": running}
+            if op == "whoami":
+                return {"source": "app", "account": "you@example.com"}
             if op == "job_list":
                 return listed("jobs", [{"name": "build", "command": "make", "state": "running", "started_at_ms": 1}])
             if op == "job_kill":

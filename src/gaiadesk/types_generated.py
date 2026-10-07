@@ -108,6 +108,7 @@ class Device(TypedDict):
 class DeviceList(TypedDict):
     """`devices --json`."""
     devices: List["Device"]
+    identity: "Identity"
     notes: List[str]
     sources: List[str]
 
@@ -195,6 +196,7 @@ exactly it. Build it with `ExecSpec::command` or `ExecSpec::argv`."""
     argv: NotRequired[List[str]]
     command: NotRequired[Optional[str]]
     cwd: NotRequired[Optional[str]]
+    env: NotRequired[Dict[str, str]]
     shell: NotRequired["Shell"]
     stdin: NotRequired[Optional[str]]
     timeout_secs: NotRequired[Optional[float]]
@@ -228,6 +230,12 @@ class ForwardStopped(TypedDict):
     local_ports: List[int]
 
 
+class Identity(TypedDict):
+    """`whoami --json`; `devices --json`'s `identity`."""
+    account: NotRequired[Optional[str]]
+    source: str
+
+
 class Job(TypedDict):
     """A background job on a desk."""
     by: NotRequired[str]
@@ -239,6 +247,7 @@ class Job(TypedDict):
     log_bytes: NotRequired[int]
     name: str
     pid: NotRequired[Optional[int]]
+    reason: NotRequired[Optional[str]]
     started_at_ms: int
     state: str
 
@@ -275,8 +284,18 @@ class JobSpec(TypedDict):
     """A background job to start (`Desk::run_job`)."""
     command: List[str]
     cwd: NotRequired[Optional[str]]
+    env: NotRequired[Dict[str, str]]
     limits: NotRequired["JobLimits"]
     name: str
+    shell: NotRequired[Union["Shell", None]]
+
+
+class JobWaitResult(TypedDict):
+    """How a wait for a job ended (`Desk::wait_job`): the job as it
+ended — or, `timed_out`, as it stands, still running. (`gaiadesk-cli
+wait --json` prints `job`.)"""
+    job: "Job"
+    timed_out: bool
 
 
 class Measurement(TypedDict):
@@ -413,7 +432,7 @@ class ScreenSize(TypedDict):
     width: int
 
 
-Shell = Union[Literal["default"], Literal["none"], Literal["sh"], Literal["cmd"], Literal["pwsh"]]
+Shell = Union[Literal["default"], Literal["none"], Literal["sh"], Literal["bash"], Literal["zsh"], Literal["cmd"], Literal["pwsh"]]
 """Which shell runs a command on the desk."""
 
 

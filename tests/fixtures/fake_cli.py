@@ -5,7 +5,8 @@ $FAKE_LOG so tests can check exactly what the SDK sent.
 The CLI: ``--version --json`` with features, one error envelope,
 ``{"jobs": [...]}``-style lists, ``exec --json-stream``, ``--cwd`` (exec,
 run, shell), ``--json`` on logs / mesh ip / disconnect / agent-connect,
-``gaiadesk_*`` MCP tool names. With FAKE_CLI=old (or through
+``gaiadesk_*`` MCP tool names, ``wait`` (the job's exit code; 124 at
+--timeout), ``whoami --json`` and ``--env`` / ``--shell`` (echoed in argv). With FAKE_CLI=old (or through
 fake_cli_old.py) a CLI too old to answer ``--version --json``, which does
 not know ``--cwd``: for the "update gaiadesk-cli" checks.
 
@@ -69,6 +70,13 @@ def failure(kind, message, exit, reason=None, desk=None):
     out({"error": e})
     err("gaiadesk-cli: " + message)
     return exit
+
+
+def identity():
+    """``whoami --json`` / ``devices --json``'s ``identity``: an account token signs in, else nobody."""
+    if os.environ.get("GAIADESK_TOKEN"):
+        return {"source": "token", "account": "bot@example.com"}
+    return {"source": "none", "account": None}
 
 
 def listed(key, items):
@@ -223,7 +231,7 @@ def main():
             for r in rows:
                 r["reachable"] = r["desk_id"] == OK
                 r["probe"] = {"ok": True, "dialled": True, "route": "LAN", "rtt_ms": 4} if r["desk_id"] == OK else {"ok": False, "dialled": True, "kind": "no_route"}
-        out({"devices": rows, "sources": ["account", "mesh"], "notes": []})
+        out({"devices": rows, "sources": ["account", "mesh"], "notes": [], "identity": identity()})
         return 1 if any(r["reachable"] is False for r in rows) else 0
     if cmd == "exec":
         mode = "stream" if has("--json-stream") else ("json" if has("--json") else "plain")
@@ -250,6 +258,25 @@ def main():
             return failure("refused", "this agent token does not have the `jobs` scope", 254, desk=desk)
         out(job(flag("--name"), command=" ".join(after_dashes())))
         return 0
+    if cmd == "wait":
+        name = argv[1]
+        if desk == REFUSED:
+            return failure("refused", "this agent token does not have the `jobs` scope", 254, desk=desk)
+        if name == "nope":
+            return failure("failed", "no job named nope", 1, desk=desk)
+        if name == "slow" and flag("--timeout"):
+            out(job(name))
+            return 124
+        if name == "blocked":
+            out(job(name, state="exited (blocked by Windows Smart App Control / WDAC)", reason="blocked_by_os_policy"))
+            return 1
+        code = 3 if name == "failing" else 0
+        out(job(name, state="exited", exit_code=code))
+        return code
+    if cmd == "whoami":
+        who = identity()
+        out(who)
+        return 0 if who["account"] else 1
     if cmd == "ps":
         if desk == PLAIN:
             out("NAME  STATE")

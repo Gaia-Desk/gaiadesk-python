@@ -22,6 +22,8 @@ def _shape(shape: Mapping[str, Any]) -> Dict[str, Any]:
         s["verbose"] = True
     if shape.get("cwd") is not None:
         s["cwd"] = A.check_cwd(shape["cwd"])
+    if shape.get("env") is not None:
+        s["env"] = A.check_env(shape["env"])
     return s
 
 
@@ -75,11 +77,22 @@ def run_job(desk_id: str, name: str, command: Any, limits: Mapping[str, Any]) ->
     a = dict(desk(desk_id), name=name, command=_cmd(command), limits=lim)
     if limits.get("cwd") is not None:
         a["cwd"] = A.check_cwd(limits["cwd"])
+    if limits.get("shell") is not None:
+        a["shell"] = limits["shell"]
+    if limits.get("env") is not None:
+        a["env"] = A.check_env(limits["env"])
     return a
 
 
 def job(desk_id: str, name: str) -> Dict[str, Any]:
     return dict(desk(desk_id), name=name)
+
+
+def wait_job(desk_id: str, name: str, timeout: Any) -> Dict[str, Any]:
+    a = job(desk_id, name)
+    if timeout is not None:
+        a["timeout"] = A.duration(timeout, "--timeout")
+    return a
 
 
 def logs(desk_id: str, name: str, tail: Optional[int]) -> Dict[str, Any]:
