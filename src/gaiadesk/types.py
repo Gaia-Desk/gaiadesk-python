@@ -15,7 +15,7 @@ the package there); the client itself does not import it.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Union
+from typing import Any, Dict, List
 
 from typing import TypedDict
 
@@ -25,11 +25,7 @@ from .types_generated import (
     CopyResult,
     Device,
     DeviceList,
-    ExecEvent_Error,
-    ExecEvent_Note,
-    ExecEvent_Stderr,
-    ExecEvent_Stdout,
-    ExecExit,
+    ExecEvent,
     Job,
     Measurement,
 )
@@ -53,15 +49,7 @@ MeasureResult = Measurement
 # ── The SDK's own shapes ──
 
 
-class ExecEvent_Exit(ExecExit):
-    """The last line of ``exec --json-stream`` for a run that started:
-    ``ExecExit`` with ``"event": "exit"`` (the generated ``ExecEvent`` names
-    this variant ``ExecExit``, without its ``event`` tag)."""
-
-    event: Literal["exit"]
-
-
-ExecStreamEvent = Union[ExecEvent_Stdout, ExecEvent_Stderr, ExecEvent_Note, ExecEvent_Exit, ExecEvent_Error]
+ExecStreamEvent = ExecEvent
 """One line of ``exec --json-stream`` (``note`` never reaches the CLI's stdout)."""
 
 

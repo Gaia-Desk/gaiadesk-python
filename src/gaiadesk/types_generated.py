@@ -2,80 +2,13 @@
 # The result, error, request and event types of gaiadesk-client and `gaiadesk-cli --json`.
 from __future__ import annotations
 
+import sys
 from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
 
-try:
+if sys.version_info >= (3, 11):
     from typing import NotRequired
-except ImportError:  # Python < 3.11
+else:  # typing_extensions before Python 3.11
     from typing_extensions import NotRequired
-
-
-class CopyProgress_FileDone(TypedDict):
-    event: Literal["file_done"]
-    path: str
-    resumed: int
-    size: int
-
-
-class CopyProgress_FileFailed(TypedDict):
-    event: Literal["file_failed"]
-    message: str
-    path: str
-
-
-class CopyProgress_Bytes(TypedDict):
-    done: int
-    event: Literal["bytes"]
-    path: str
-    size: int
-
-
-class ExecEvent_Stdout(TypedDict):
-    """Output on stdout. `data` is the text this chunk completes (a character
-split across chunks waits for its end); `bytes` (not serialized) are
-the exact bytes of the chunk."""
-    data: str
-    event: Literal["stdout"]
-
-
-class ExecEvent_Stderr(TypedDict):
-    """Output on stderr (as `stdout`)."""
-    data: str
-    event: Literal["stderr"]
-
-
-class ExecEvent_Note(TypedDict):
-    """A line of this client's about the run (it is waiting for the desk…)."""
-    event: Literal["note"]
-    message: str
-
-
-class ExecEvent_Error(TypedDict):
-    """It never ran, or the connection went: `exit` is the CLI's exit code."""
-    error: "Error"
-    event: Literal["error"]
-    exit: int
-
-
-class JobLogEvent_Output(TypedDict):
-    data: str
-    event: Literal["output"]
-
-
-class JobLogEvent_End(TypedDict):
-    """The job ended (or, not following, the output so far was all sent)."""
-    event: Literal["end"]
-    job: "Job"
-
-
-class JobLogEvent_Interrupted(TypedDict):
-    """Following was stopped here; the job goes on."""
-    event: Literal["interrupted"]
-
-
-class JobLogEvent_Error(TypedDict):
-    error: "Error"
-    event: Literal["error"]
 
 
 class AccountRevoked(TypedDict):
@@ -121,7 +54,7 @@ class CopyFailure(TypedDict):
 
 
 CopyProgress = Union["CopyProgress_FileDone", "CopyProgress_FileFailed", "CopyProgress_Bytes"]
-"""What a copy is doing, as it goes ([`Desk::cp_up_with_progress`])."""
+"""What a copy is doing, as it goes (`Desk::cp_up_with_progress`)."""
 
 
 class CopyResult(TypedDict):
@@ -139,7 +72,7 @@ class CopyResult(TypedDict):
 
 class DeskStats(TypedDict):
     """What a desk is doing right now (`gaiadesk-cli stats`,
-[`super::DataMessage::Stats`]). Every number is a snapshot taken when
+`DataMessage::Stats`). Every number is a snapshot taken when
 asked."""
     cpu_percent: float
     cpus: int
@@ -189,18 +122,18 @@ class Disconnected(TypedDict):
 
 
 class DiskStat(TypedDict):
-    """One volume in [`DeskStats`]."""
+    """One volume in `DeskStats`."""
     free_mb: int
     mount: str
     total_mb: int
 
 
 class Error(TypedDict):
-    """Why a call did not succeed: one of six [`ErrorKind`]s, a sentence for a
+    """Why a call did not succeed: one of six `ErrorKind`s, a sentence for a
 person, the finer cause where there is one, and the desk it concerned.
 
 Its serde form is the object inside `gaiadesk-cli`'s `--json` error
-envelope ([`ErrorEnvelope`]): `{"kind", "message", "reason"?, "desk"?}`."""
+envelope (`ErrorEnvelope`): `{"kind", "message", "reason"?, "desk"?}`."""
     desk: NotRequired[Optional[str]]
     kind: "ErrorKind"
     message: str
@@ -217,13 +150,13 @@ ErrorKind = Union[Literal["usage"], Literal["refused"], Literal["unreachable"], 
 breaking change, so match with a wildcard arm anyway."""
 
 
-ExecEvent = Union["ExecEvent_Stdout", "ExecEvent_Stderr", "ExecEvent_Note", "ExecExit", "ExecEvent_Error"]
-"""One event of a streamed command ([`crate::Desk::exec_stream`]) —
+ExecEvent = Union["ExecEvent_Stdout", "ExecEvent_Stderr", "ExecEvent_Note", "ExecEvent_Exit", "ExecEvent_Error"]
+"""One event of a streamed command (`Desk::exec_stream`) —
 `gaiadesk-cli exec --json-stream` prints one per line (all but `note`)."""
 
 
 class ExecExit(TypedDict):
-    """[`ExecResult`] without the output — the last event of a stream."""
+    """`ExecResult` without the output — the last event of a stream."""
     desk: str
     duration_ms: int
     error: NotRequired[Union["Error", None]]
@@ -254,11 +187,11 @@ class ExecResult(TypedDict):
 
 
 class ExecSpec(TypedDict):
-    """One command to run on a desk ([`crate::Desk::exec`]).
+    """One command to run on a desk (`Desk::exec`).
 
 `command` is ONE command line, given to the shell verbatim; `argv` is an
 argument vector, each entry quoted for the shell so the program receives
-exactly it. Build it with [`ExecSpec::command`] or [`ExecSpec::argv`]."""
+exactly it. Build it with `ExecSpec::command` or `ExecSpec::argv`."""
     argv: NotRequired[List[str]]
     command: NotRequired[Optional[str]]
     cwd: NotRequired[Optional[str]]
@@ -268,7 +201,7 @@ exactly it. Build it with [`ExecSpec::command`] or [`ExecSpec::argv`]."""
 
 
 class Forward(TypedDict):
-    """Forwards that are running ([`crate::Desk::forward_start`])."""
+    """Forwards that are running (`Desk::forward_start`)."""
     desk: str
     forward_id: str
     listening: List["ForwardListening"]
@@ -290,7 +223,7 @@ class ForwardSpec(TypedDict):
 
 
 class ForwardStopped(TypedDict):
-    """A forward that ended on purpose ([`crate::Client::forward_stop`])."""
+    """A forward that ended on purpose (`Client::forward_stop`)."""
     forward_id: str
     local_ports: List[int]
 
@@ -312,9 +245,9 @@ class Job(TypedDict):
 
 class JobLimits(TypedDict):
     """What a background job may use, and whether the desk stays awake for it
-([`super::DataMessage::JobStart`]'s `limits`). Every field optional and
+(`DataMessage::JobStart`'s `limits`). Every field optional and
 off the wire when unset, so a start without limits is byte for byte what
-it was. A desk lists [`super::feature::JOB_LIMITS`] when it enforces them;
+it was. A desk lists `feature::JOB_LIMITS` when it enforces them;
 a desk before that ignores the field, which is why a CLI refuses to send
 caps to one."""
     cpu_percent: NotRequired[Optional[int]]
@@ -339,7 +272,7 @@ class JobLogs(TypedDict):
 
 
 class JobSpec(TypedDict):
-    """A background job to start ([`crate::Desk::run_job`])."""
+    """A background job to start (`Desk::run_job`)."""
     command: List[str]
     cwd: NotRequired[Optional[str]]
     limits: NotRequired["JobLimits"]
@@ -390,7 +323,7 @@ class MintResult(TypedDict):
 
 
 class MintSpec(TypedDict):
-    """An agent token to mint ([`crate::Desk::mint_token`])."""
+    """An agent token to mint (`Desk::mint_token`)."""
     cwd: NotRequired[Optional[str]]
     expires_secs: int
     low_priv: NotRequired[bool]
@@ -511,3 +444,79 @@ class VersionInfo(TypedDict):
     mcp_protocol_versions: List[str]
     name: str
     version: str
+
+
+
+# Inline variants (after the types they extend: a base class must exist first).
+
+class CopyProgress_FileDone(TypedDict):
+    event: Literal["file_done"]
+    path: str
+    resumed: int
+    size: int
+
+
+class CopyProgress_FileFailed(TypedDict):
+    event: Literal["file_failed"]
+    message: str
+    path: str
+
+
+class CopyProgress_Bytes(TypedDict):
+    done: int
+    event: Literal["bytes"]
+    path: str
+    size: int
+
+
+class ExecEvent_Stdout(TypedDict):
+    """Output on stdout. `data` is the text this chunk completes (a character
+split across chunks waits for its end); `bytes` (not serialized) are
+the exact bytes of the chunk."""
+    data: str
+    event: Literal["stdout"]
+
+
+class ExecEvent_Stderr(TypedDict):
+    """Output on stderr (as `stdout`)."""
+    data: str
+    event: Literal["stderr"]
+
+
+class ExecEvent_Note(TypedDict):
+    """A line of this client's about the run (it is waiting for the desk…)."""
+    event: Literal["note"]
+    message: str
+
+
+class ExecEvent_Exit(ExecExit):
+    """It ended (always the last event of a run that started)."""
+    event: Literal["exit"]
+
+
+class ExecEvent_Error(TypedDict):
+    """It never ran, or the connection went: `exit` is the CLI's exit code."""
+    error: "Error"
+    event: Literal["error"]
+    exit: int
+
+
+class JobLogEvent_Output(TypedDict):
+    data: str
+    event: Literal["output"]
+
+
+class JobLogEvent_End(TypedDict):
+    """The job ended (or, not following, the output so far was all sent)."""
+    event: Literal["end"]
+    job: "Job"
+
+
+class JobLogEvent_Interrupted(TypedDict):
+    """Following was stopped here; the job goes on."""
+    event: Literal["interrupted"]
+
+
+class JobLogEvent_Error(TypedDict):
+    error: "Error"
+    event: Literal["error"]

@@ -47,8 +47,3 @@ gaiadesk = ["py.typed"]
 [tool.mypy]
 python_version = "3.9"
 
-[[tool.mypy.overrides]]
-# Generated (scripts/gen-sdk-types.mts in GaiaDesk): its NotRequired import is
-# a try/except, which mypy reads as typing.NotRequired on Python < 3.11.
-module = "gaiadesk.types_generated"
-disable_error_code = ["attr-defined"]
