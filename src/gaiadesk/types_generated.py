@@ -454,7 +454,6 @@ class TokenList(TypedDict):
 class VersionInfo(TypedDict):
     """`--version --json`."""
     features: List[str]
-    json_shapes: List[str]
     mcp_protocol_versions: List[str]
     name: str
     version: str
