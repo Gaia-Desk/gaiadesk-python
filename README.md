@@ -8,8 +8,8 @@ agent tokens, forward ports, and reach the screen tools through MCP.
 - Package: `gaiadesk` (Python 3.9+, sync and asyncio, typed: ships `py.typed`)
 - Dependencies: none from Python 3.11 (`typing_extensions` before, for the
   types); one optional extra, `gaiadesk[native]`
-- Works with any `gaiadesk-cli`; the newest features (`cwd`, streamed exec
-  events) need 0.10.324 or later, which the SDK detects
+- Reads the JSON the current `gaiadesk-cli` prints (one error envelope,
+  object-shaped lists, `exec --json-stream`)
 
 **How it works.** Two backends, one API:
 
@@ -185,32 +185,32 @@ Every result is the CLI's JSON, with the CLI's field names (types in
 | Method | CLI | Returns |
 |---|---|---|
 | `version()` | `--version` | `"gaiadesk-cli X.Y.Z"` |
-| `cli_version_info()` | `--version --json` | `{name, version, features[], json_shapes[], mcp_protocol_versions[]}`, or `None` from a CLI before 0.10.324 |
-| `cli_features()` | `--version --json` | a frozenset (`exec_json_stream`, `exec_cwd`, `run_cwd`, ...); empty for an older CLI |
+| `cli_version_info()` | `--version --json` | `{name, version, features[], mcp_protocol_versions[]}`, or `None` from a CLI too old to answer it |
+| `cli_features()` | `--version --json` | a frozenset (`exec_json_stream`, `exec_cwd`, `run_cwd`, ...) |
 | `devices(probe=, desk_id=)` | `devices --json [--probe] [-d]` | `{devices[], sources[], notes[]}`; with `probe`, unreachable desks have `reachable: False` |
 | `probe(desk_id)` | `devices --probe -d` | one device row with `probe` |
 | `exec(desk_id, command, cwd=, **opts)` | `exec --json [--cwd]` | `{exit, remote_code, stdout, stderr, duration_ms, desk, route, mode, shell, timed_out, error, notes, truncated}` |
-| `exec_stream(desk_id, command, cwd=, json_stream=, **opts)` | `exec --json-stream` (0.10.324+), else `exec` | a stream of stdout/stderr chunks, then the exit code (and, with events, `result`) |
+| `exec_stream(desk_id, command, cwd=, json_stream=, **opts)` | `exec --json-stream` (`json_stream=False`: `exec`) | a stream of stdout/stderr chunks, then the exit code (and, with events, `result`) |
 | `shell(desk_id, script, **opts)` | `shell --json [--cwd]`, script on stdin | as `exec` |
 | `shell_stream(desk_id, script=None, **opts)` | `shell [--cwd]` | stream; without a script, stdin stays open for `write()`/`end()` |
 | `upload(local, desk_id, remote, recursive=)` | `cp --json <local> <desk>:<remote>` | `{direction, desk, destination, files, dirs, bytes, resumed_bytes, failed[], seconds}` |
 | `download(desk_id, remote, local, recursive=)` | `cp --json <desk>:<remote> <local>` | as above |
 | `run_job(desk_id, name, command, cwd=, priority=, cpu=, mem=, keep_awake=)` | `run --detach --json [--cwd]` | job `{name, command, state, pid, exit_code, started_at_ms, ended_at_ms, log_bytes, by, limits, enforcement}` |
-| `jobs(desk_id)` | `ps --json` | job list (the CLI's `{"jobs": [...]}`, or an older CLI's bare array) |
-| `job_logs(desk_id, name, tail=)` | `logs --json` (0.10.324+), else `logs` | output text (the `output` of `{job, output}`) |
-| `follow_job_logs(desk_id, name)` | `logs -f --json` (0.10.324+), else `logs -f` | stream; `.result` is the `end` / `interrupted` / `error` event |
+| `jobs(desk_id)` | `ps --json` | job list (from `{"jobs": [...]}`) |
+| `job_logs(desk_id, name, tail=)` | `logs --json` | output text (the `output` of `{job, output}`) |
+| `follow_job_logs(desk_id, name)` | `logs -f --json` | stream; `.result` is the `end` / `interrupted` / `error` event |
 | `kill_job(desk_id, name)` | `kill --json` | job |
 | `stats(desk_id)` | `stats --json` | `{desk, hostname, os, os_version, cpu_percent, cpus, load, mem_total_mb, mem_free_mb, disks[], uptime_secs, jobs_running}` |
 | `measure(desk_id, count=)` | `measure --json` | `{desk, sent, rtt_ms{n,p50,p95,max}, clock_offset_ms, clock_uncertainty_ms}` |
 | `create_token(desks, name=, expires=, scopes=, cwd=, low_priv=, out=)` | `token create --json` | `MintResult` `{tokens[{desk, token, secret}]}`; with `out`, `TokenFileResult` `{tokens[{desk, token}], file}` |
-| `list_tokens(desk_id)` | `token list --json` | token list `{label, id, scopes, issued_at_ms, expires_at_ms, revoked, last_used_ms, cwd, low_priv}` (from `{"tokens": [...]}` or a bare array) |
+| `list_tokens(desk_id)` | `token list --json` | token list `{label, id, scopes, issued_at_ms, expires_at_ms, revoked, last_used_ms, cwd, low_priv}` (from `{"tokens": [...]}`) |
 | `revoke_token(desk_id, name, all_for_desk=, account=)` | `token revoke --json` | `{revoked, stopped_sessions}` or (account) `{desk, ok, message}` |
-| `audit(desk_id, token=, limit=, account=)` | `audit --json` | event list `{at_ms, desk, token, token_id, action, detail, bytes, cwd, exit_code, duration_ms}` (from `{"events": [...]}` or a bare array) |
+| `audit(desk_id, token=, limit=, account=)` | `audit --json` | event list `{at_ms, desk, token, token_id, action, detail, bytes, cwd, exit_code, duration_ms}` (from `{"events": [...]}`) |
 | `mesh_status()` | `mesh status --json` | `{self, peers[]}` |
-| `mesh_ip(desk_id)` | `mesh ip --json` (0.10.324+), else `mesh ip` | the address |
+| `mesh_ip(desk_id)` | `mesh ip --json` | the address |
 | `disconnect(desk_id=None)` | `disconnect --desk-id \| --all [--json]` | `{closed[]}` |
 | `forward(desk_id, spec \| [spec])` | `forward --json` | a `Forward` with `listening`, `close()`, `wait()`; a context manager |
-| `agent_connect(desk_id)` | `agent-connect --json` (0.10.324+), else `agent-connect` | the confirmation line ("agent session open on desk N: screenshot WxH") |
+| `agent_connect(desk_id)` | `agent-connect --json` | the confirmation line ("agent session open on desk N: screenshot WxH") |
 | `mcp(audit_dir=, allow_domains=)` | `mcp` (stdio) | an MCP client: `list_tools()`, `call_tool(name, args)`, `close()`; a context manager |
 | `raw(args, input=)` | anything | `Completed(code, stdout, stderr)`: the escape hatch |
 
@@ -224,10 +224,10 @@ paths are from the desk user's home, or from a confined token's folder).
 
 **Feature detection.** The SDK asks `gaiadesk-cli --version --json` what it
 can do, once per CLI (its path, size and modification time) per process,
-and only when a call needs to know: a `cwd`, or `exec_stream`. A CLI from
-before 0.10.324 does not understand that flag, which counts as "no
-features". `cwd` with such a CLI raises `UsageError` (and nothing runs); it
-is never silently dropped. The native backend takes `cwd` directly.
+and only when a call needs to know: a `cwd`. A CLI without the `exec_cwd`,
+`run_cwd` or `shell_cwd` feature (or too old to answer `--version --json`)
+raises `UsageError` saying to update gaiadesk-cli, and nothing runs; `cwd` is
+never silently dropped. The native backend takes `cwd` directly.
 
 `command` as a **str** is one command line for the desk's shell, verbatim;
 as a **list**, separate arguments that the desk quotes for its shell. The
@@ -241,8 +241,7 @@ Streams (`CliStream`, `AsyncCliStream`) yield `Chunk(stream, data)`;
 `gaiadesk-cli` turns into stopping the remote command (on Windows the
 process is terminated instead).
 
-With a CLI that has `exec --json-stream` (0.10.324+), `exec_stream` returns
-a `JsonExecStream` (`AsyncJsonExecStream`) built from its events: the same
+`exec_stream` runs `exec --json-stream` and returns a `JsonExecStream` (`AsyncJsonExecStream`) built from its events: the same
 chunks, plus `.result` once it has ended: the last event,
 `{"event": "exit", exit, remote_code, duration_ms, desk, route, mode, shell,
 timed_out, error, notes}`, or `{"event": "error", "exit", "error": {kind,
@@ -275,18 +274,16 @@ gd.mcp() as m`) that matches concurrent requests to replies. Every tool and
 its arguments are listed in the
 [gaiadesk-mcp README](https://github.com/Gaia-Desk/gaiadesk-mcp#the-tools)
 ("The tools"), and `list_tools()` returns their schemas. Tool names are
-`gaiadesk_<tool>` from `gaiadesk-cli` 0.10.324 (`gaiadesk.<tool>` before);
-`call_tool` accepts either spelling and sends the one the server
-advertises, so use `gaiadesk_exec`, `gaiadesk_screenshot`, ... with any CLI.
-The client speaks the stateless MCP revision (2026-07-28), which every CLI's
-server takes; 0.10.324+ also speaks the standard `initialize` lifecycle.
+`gaiadesk_<tool>` (`gaiadesk_exec`, `gaiadesk_screenshot`, ...). The client
+speaks the stateless MCP revision (2026-07-28), which the server takes beside
+the standard `initialize` lifecycle.
 
 ## Errors and exit codes
 
 | Error | When |
 |---|---|
 | `CliNotFoundError` | `gaiadesk-cli` could not be started |
-| `UsageError` | kind `usage`: bad arguments (from the SDK, or the CLI, including "no credential"); also `cwd` with a CLI before 0.10.324 |
+| `UsageError` | kind `usage`: bad arguments (from the SDK, or the CLI, including "no credential"); also `cwd` with a CLI that lacks the feature (update gaiadesk-cli) |
 | `RefusedError` | kind `refused`, exit 254: wrong code, token without the scope, expired or revoked, permission off, a `cwd` outside a confined token's folder |
 | `UnreachableError` | kind `unreachable`: `offline`, `unknown_desk`, `not_online`, `network`, `not_signed_in`, `timeout` |
 | `ConnectionLostError` | kind `connection_lost`, or `shell` exit 253 |
@@ -305,15 +302,14 @@ reason). `CliNotFoundError` there means `backend="native"` was asked for and
 Every error carries `exit_code`, `kind`, `reason`, `desk`, `stderr`, `argv`
 and the parsed `json` when there was one.
 
-From 0.10.324 every `--json` failure is one envelope,
+Every `--json` failure is one envelope,
 `{"error": {"kind", "message", "reason"?, "desk"?}}`, with `kind` one of
 `usage`, `refused`, `unreachable`, `connection_lost`, `failed`, `protocol`
 (the class above) and `reason` the finer cause. An error's `kind` is that
 reason when it is one the SDK knows (`offline`, `timeout`, `local`, ...),
-else the envelope's kind; `reason` and `desk` are the envelope's. Older
-CLIs' shapes (`{"error": "<text>"}`, `{"refused": "<text>"}`, exec's
-fine-grained kinds, a sentence on stderr) are still read, all in one place
-(`error_envelope` in [`src/gaiadesk/errors.py`](src/gaiadesk/errors.py)).
+else the envelope's kind; `reason` and `desk` are the envelope's. It is
+read in one place (`error_envelope` in
+[`src/gaiadesk/errors.py`](src/gaiadesk/errors.py)).
 
 A non-zero exit from **your command** is not an error: `exec` returns it in
 `exit` (and `remote_code`), with `timed_out: True` and exit 124 when
@@ -345,18 +341,9 @@ When should a model drive the desk instead of your code? See
 
 Things the CLI does not (yet) offer, so neither does the SDK (the TypeScript SDK has the same list):
 
-1. **Older CLIs.** Before `gaiadesk-cli` 0.10.324 there is no `--cwd` (the
-   SDK raises `UsageError`), no `exec --json-stream` (streams are plain
-   bytes with no `result`), no feature list, and errors outside
-   `exec`/`shell` have no kind: the SDK raises `RefusedError` (254),
-   `OperationFailedError` (1) or `GaiaDeskError` with `kind == "cli_error"`
-   (255) with the CLI's sentence. Before that release `run --detach` also
-   re-quoted a single command line; pass `run_job` an argument list there.
-2. **Text from older CLIs.** `job_logs` / `follow_job_logs`, `mesh_ip`,
-   `disconnect` and `agent_connect` use `--json` on a CLI that lists
-   `logs_json`, `mesh_ip_json`, `disconnect_json` and `agent_connect_json`
-   (0.10.324+), and read an older CLI's text otherwise. `forward --json`
-   prints only `listening` events.
+1. **`forward --json`** prints only `listening` events.
+2. **`exec --json` buffers** the whole output (up to 16 MB per stream); use
+   `exec_stream` for large output.
 3. **No interactive terminal.** `shell` is interactive only on a real TTY;
    the SDK runs it over pipes (a script, or lines you write).
 4. **Durations** are whole seconds or `30s`/`10m`/`2h`-style strings;
@@ -376,8 +363,8 @@ python -m unittest discover -s tests -v
 The tests put `src/` on `sys.path` and never touch a real desk.
 [`tests/fixtures/fake_cli.py`](tests/fixtures/fake_cli.py) prints the JSON
 shapes the real CLI documents and records the argv and environment it was
-given; it plays a CLI of 0.10.324 or later, and (through
-`fake_cli_old.py`) one from before, so every change is tested against both.
+given (through `fake_cli_old.py` it plays a CLI too old to answer
+`--version --json`, for the `cwd` checks).
 [`tests/fixtures/mock_native.py`](tests/fixtures/mock_native.py) does the
 same for the native library.
 

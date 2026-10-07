@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json as _json
 import os
-import re
 import sys
 import threading
 from dataclasses import dataclass
@@ -32,12 +31,6 @@ from .errors import (
 FEATURE_EXEC_CWD = "exec_cwd"
 FEATURE_RUN_CWD = "run_cwd"
 FEATURE_SHELL_CWD = "shell_cwd"
-FEATURE_EXEC_JSON_STREAM = "exec_json_stream"
-# The ``--json`` forms of commands an older CLI answers in text (0.10.324+).
-FEATURE_LOGS_JSON = "logs_json"
-FEATURE_MESH_IP_JSON = "mesh_ip_json"
-FEATURE_DISCONNECT_JSON = "disconnect_json"
-FEATURE_AGENT_CONNECT_JSON = "agent_connect_json"
 
 DOWNLOAD_URL = "https://gaiadesk.net/download"
 
@@ -58,16 +51,6 @@ class Plan(NamedTuple):
     native: Optional[N.NativeReq] = None
     requires: Tuple[Tuple[str, str], ...] = ()
     """``(feature, what)`` pairs the CLI must list in ``--version --json`` for this run (CLI backend only)."""
-    upgrade: Optional[Tuple[str, List[str], Callable[[Completed], Any]]] = None
-    """``(feature, args, finish)``: the run to make instead when the CLI lists ``feature`` (its ``--json`` form)."""
-
-
-def upgraded(plan: Plan, have: FrozenSet[str]) -> Plan:
-    """``plan``, or its ``--json`` form when the CLI has it (``Plan.upgrade``)."""
-    if plan.upgrade is None or plan.upgrade[0] not in have:
-        return plan
-    _feature, args, finish = plan.upgrade
-    return plan._replace(args=args, finish=finish, upgrade=None)
 
 
 def _b(data: Union[None, str, bytes]) -> Optional[bytes]:
@@ -180,8 +163,8 @@ def clear_feature_cache() -> None:
 
 
 def version_info_from(done: Completed) -> Optional[Dict[str, Any]]:
-    """``--version --json``'s VersionInfo, or None from a CLI before 0.10.324
-    (it prints its version as text, or fails on the flag): no features."""
+    """``--version --json``'s VersionInfo, or None from a CLI too old to answer
+    it (it prints its version as text, or fails on the flag): no features."""
     if done.code != 0:
         return None
     v = parse_json(done.stdout)
@@ -202,8 +185,8 @@ def missing_feature(have: FrozenSet[str], requires: Sequence[Tuple[str, str]], i
         if feature not in have:
             ver = info.get("version") if info else None
             return UsageError(
-                "%s needs a newer gaiadesk-cli (0.10.324 or later: its `--version --json` lists %r; this one is %s). "
-                "Update GaiaDesk from %s, or leave %s out." % (what, feature, ver or "older", DOWNLOAD_URL, what),
+                "%s: this gaiadesk-cli (%s) does not list %r in `--version --json`. "
+                "Update gaiadesk-cli from %s, or leave %s out." % (what, ver or "too old to say", feature, DOWNLOAD_URL, what),
                 kind="usage",
                 argv=VERSION_JSON_ARGS,
             )
@@ -256,14 +239,12 @@ def exec_finish(args: Sequence[str], check: bool) -> Callable[[Completed], Any]:
 
 
 def unwrap_list(key: str, args: Sequence[str]) -> Callable[[Any], Any]:
-    """``{"<key>": [...]}`` (0.10.324+) or a bare array (older): the list."""
+    """``{"<key>": [...]}``: the list."""
 
     def unwrap(v: Any) -> Any:
         if isinstance(v, dict) and isinstance(v.get(key), list):
             return v[key]
-        if isinstance(v, list):
-            return v
-        raise ProtocolError("gaiadesk-cli printed neither {%r: [...]} nor a list" % key, kind="protocol", argv=args, json=v)
+        raise ProtocolError("gaiadesk-cli printed no {%r: [...]}" % key, kind="protocol", argv=args, json=v)
 
     return unwrap
 
@@ -291,17 +272,6 @@ def field_finish(args: Sequence[str], key: str) -> Callable[[Completed], Any]:
         if isinstance(v, dict) and isinstance(v.get(key), str):
             return v[key]
         raise ProtocolError("gaiadesk-cli printed no %r" % key, kind="protocol", argv=args, json=v)
-
-    return finish
-
-
-def closed_text_finish(args: Sequence[str]) -> Callable[[Completed], Any]:
-    """An older CLI's ``disconnect``: ``{"closed": [...]}`` from its stderr lines."""
-
-    def finish(done: Completed) -> Any:
-        if done.code != 0:
-            raise failure(done, args, None)
-        return {"closed": re.findall(r"closed the held connection to desk (\S+)", done.stderr)}
 
     return finish
 
@@ -469,9 +439,8 @@ class Base:
         return Plan(a, None, none_finish(a), native)
 
     def _p_mesh_ip(self, desk_id: str) -> Plan:
-        a, j = A.mesh_ip_args(desk_id), A.mesh_ip_args(desk_id, json=True)
-        return Plan(a, None, text_finish(a, strip=True), N.NativeReq("mesh_ip", N.desk(desk_id), None, N.field_finish("mesh_ip")),
-                    upgrade=(FEATURE_MESH_IP_JSON, j, field_finish(j, "mesh_ip")))
+        a = A.mesh_ip_args(desk_id)
+        return Plan(a, None, field_finish(a, "mesh_ip"), N.NativeReq("mesh_ip", N.desk(desk_id), None, N.field_finish("mesh_ip")))
 
     def _p_mesh_status(self) -> Plan:
         return self._p_op(["mesh", "status", "--json"], native=N.NativeReq("mesh_status", {}))
@@ -482,7 +451,7 @@ class Base:
         return Plan(a, None, op_finish(a), N.NativeReq("job_run", N.run_job(desk_id, name, command, limits)), req)
 
     def _p_list(self, a: List[str], key: str, op: str, nargs: Dict[str, Any]) -> Plan:
-        """``ps`` / ``token list`` / ``audit``: ``{"<key>": [...]}`` from 0.10.324, a bare array before; the list either way."""
+        """``ps`` / ``token list`` / ``audit``: the list in ``{"<key>": [...]}``."""
         return Plan(a, None, list_finish(a, key), N.NativeReq(op, nargs, None, unwrap_list(key, [op])))
 
     def _p_jobs(self, desk_id: str) -> Plan:
@@ -492,9 +461,8 @@ class Base:
         return self._p_op(A.kill_args(desk_id, name), native=N.NativeReq("job_kill", N.job(desk_id, name)))
 
     def _p_job_logs(self, desk_id: str, name: str, tail: Optional[int]) -> Plan:
-        a, j = A.logs_args(desk_id, name, tail), A.logs_args(desk_id, name, tail, json=True)
-        return Plan(a, None, text_finish(a), N.NativeReq("job_logs", N.logs(desk_id, name, tail), None, N.field_finish("output")),
-                    upgrade=(FEATURE_LOGS_JSON, j, field_finish(j, "output")))
+        a = A.logs_args(desk_id, name, tail)
+        return Plan(a, None, field_finish(a, "output"), N.NativeReq("job_logs", N.logs(desk_id, name, tail), None, N.field_finish("output")))
 
     def _p_stats(self, desk_id: str) -> Plan:
         return self._p_op(A.stats_args(desk_id), native=N.NativeReq("stats", N.desk(desk_id)))
@@ -516,12 +484,9 @@ class Base:
         return self._p_list(A.audit_args(desk_id, token, limit, account), "events", "audit", N.audit(desk_id, token, limit, account))
 
     def _p_disconnect(self, desk_id: Optional[str]) -> Plan:
-        a, j = A.disconnect_args(desk_id), A.disconnect_args(desk_id, json=True)
-        native = N.NativeReq("disconnect", {} if desk_id is None else N.desk(desk_id), None, N.closed_finish)
-        json_finish = op_finish(j)
-        return Plan(a, None, closed_text_finish(a), native,
-                    upgrade=(FEATURE_DISCONNECT_JSON, j, lambda done: N.closed_finish(json_finish(done))))
+        a = A.disconnect_args(desk_id)
+        return self._p_op(a, native=N.NativeReq("disconnect", {} if desk_id is None else N.desk(desk_id)))
 
     def _p_agent_connect(self, desk_id: str) -> Plan:
-        a, j = A.agent_connect_args(desk_id, self.server), A.agent_connect_args(desk_id, self.server, json=True)
-        return Plan(a, None, text_finish(a, strip=True), None, upgrade=(FEATURE_AGENT_CONNECT_JSON, j, agent_check_finish(j)))
+        a = A.agent_connect_args(desk_id, self.server)
+        return Plan(a, None, agent_check_finish(a))

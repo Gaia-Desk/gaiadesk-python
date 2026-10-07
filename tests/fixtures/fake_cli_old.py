@@ -1,5 +1,5 @@
-"""fake_cli.py as a gaiadesk-cli from before 0.10.324 (FAKE_CLI=old), at its
-own path: the SDK caches what a CLI can do per path."""
+"""fake_cli.py as a gaiadesk-cli too old to answer ``--version --json``
+(FAKE_CLI=old), at its own path: the SDK caches what a CLI can do per path."""
 
 import os
 import runpy

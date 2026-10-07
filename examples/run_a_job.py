@@ -15,8 +15,8 @@ desk = sys.argv[1]
 gd = GaiaDesk()
 name = "nightly-%d" % int(time.time())
 
-# cwd: where it starts on the desk (relative: from the desk user's home). Needs
-# gaiadesk-cli 0.10.324+; an older one raises UsageError rather than run it elsewhere.
+# cwd: where it starts on the desk (relative: from the desk user's home). A gaiadesk-cli
+# without the run_cwd feature raises UsageError rather than run it elsewhere.
 job = gd.run_job(desk, name, ["make", "test"], cwd="src/app", priority="low", cpu=50, mem="4G", keep_awake=True)
 print("started %s (pid %s); caps enforced as: %s" % (job["name"], job.get("pid"), job.get("enforcement", [])))
 

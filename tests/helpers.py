@@ -9,7 +9,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "src"))
 
 FAKE = os.path.join(HERE, "fixtures", "fake_cli.py")
-FAKE_OLD = os.path.join(HERE, "fixtures", "fake_cli_old.py")  # a gaiadesk-cli from before 0.10.324
+FAKE_OLD = os.path.join(HERE, "fixtures", "fake_cli_old.py")  # a gaiadesk-cli too old to answer --version --json
 OK, OFFLINE, REFUSED, USAGE, PLAIN = "123456789", "234567890", "345678901", "desk-usage", "desk-plain"
 
 
@@ -22,7 +22,7 @@ def base_env(log):
 
 
 def setup(cls, old=False, **opts):
-    """A client of class `cls` on the fake CLI (`old`: one from before 0.10.324), and a function returning the calls it made."""
+    """A client of class `cls` on the fake CLI (`old`: one too old to answer --version --json), and a function returning the calls it made."""
     d = tempfile.mkdtemp(prefix="gaiadesk-sdk-")
     log = os.path.join(d, "calls.jsonl")
     env = opts.pop("env", None) or base_env(log)

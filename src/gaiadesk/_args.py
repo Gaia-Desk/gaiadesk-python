@@ -198,13 +198,12 @@ def kill_args(desk_id: str, name: str) -> List[str]:
     return ["kill", check_job_name(name), "--desk-id", check_desk(desk_id), "--json"]
 
 
-def logs_args(desk_id: str, name: str, tail: Optional[int] = None, follow: bool = False, json: bool = False) -> List[str]:
-    """``logs <job> --desk-id <id> [--follow] [--json] [--tail n]`` (``--json``: 0.10.324+, feature ``logs_json``)."""
+def logs_args(desk_id: str, name: str, tail: Optional[int] = None, follow: bool = False) -> List[str]:
+    """``logs <job> --desk-id <id> [--follow] --json [--tail n]``."""
     a = ["logs", check_job_name(name), "--desk-id", check_desk(desk_id)]
     if follow:
         a.append("--follow")
-    if json:
-        a.append("--json")
+    a.append("--json")
     if tail is not None:
         if isinstance(tail, bool) or not isinstance(tail, int) or tail < 0:
             raise _usage("tail is a number of bytes")
@@ -310,23 +309,20 @@ def forward_args(desk_id: str, specs: Sequence[Dict[str, Any]]) -> List[str]:
     return a
 
 
-# ``--json`` on these: gaiadesk-cli 0.10.324+ (``disconnect_json``, ``agent_connect_json``, ``mesh_ip_json``).
-
-
-def disconnect_args(desk_id: Optional[str] = None, json: bool = False) -> List[str]:
+def disconnect_args(desk_id: Optional[str] = None) -> List[str]:
     a = ["disconnect", "--all"] if desk_id is None else ["disconnect", "--desk-id", check_desk(desk_id)]
-    return a + (["--json"] if json else [])
+    return a + ["--json"]
 
 
-def agent_connect_args(desk_id: str, server: Optional[str] = None, json: bool = False) -> List[str]:
+def agent_connect_args(desk_id: str, server: Optional[str] = None) -> List[str]:
     a = ["agent-connect", "--desk-id", check_desk(desk_id)]
     if server:
         a += ["--server", server]
-    return a + (["--json"] if json else [])
+    return a + ["--json"]
 
 
-def mesh_ip_args(desk_id: str, json: bool = False) -> List[str]:
-    return ["mesh", "ip", check_desk(desk_id)] + (["--json"] if json else [])
+def mesh_ip_args(desk_id: str) -> List[str]:
+    return ["mesh", "ip", check_desk(desk_id), "--json"]
 
 
 def mcp_args(audit_dir: Optional[str] = None, allow_domains: Sequence[str] = (), server: Optional[str] = None) -> List[str]:

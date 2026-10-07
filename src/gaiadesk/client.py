@@ -10,8 +10,6 @@ from . import _args as A
 from . import _native as N
 from ._core import (
     FEATURE_EXEC_CWD,
-    FEATURE_EXEC_JSON_STREAM,
-    FEATURE_LOGS_JSON,
     FEATURE_SHELL_CWD,
     VERSION_JSON_ARGS,
     Base,
@@ -24,7 +22,6 @@ from ._core import (
     not_found,
     parse_json,
     store_version_info,
-    upgraded,
     version_info_from,
 )
 from .mcp import McpClient
@@ -102,8 +99,6 @@ class GaiaDesk(Base):
         if n is not None and plan.native is not None:
             return n.run_sync(plan.native)
         self._require(plan.requires)
-        if plan.upgrade is not None:
-            plan = upgraded(plan, self.cli_features())
         return plan.finish(self._complete(plan.args, plan.input))
 
     def _require(self, requires: Sequence[Tuple[str, str]]) -> None:
@@ -133,8 +128,8 @@ class GaiaDesk(Base):
         return self._run(self._p_version())
 
     def cli_version_info(self) -> "Optional[VersionInfo]":
-        """``gaiadesk-cli --version --json``: ``{name, version, features, json_shapes,
-        mcp_protocol_versions}``, or None from a CLI before 0.10.324 (no features).
+        """``gaiadesk-cli --version --json``: ``{name, version, features,
+        mcp_protocol_versions}``, or None from a CLI too old to answer it (no features).
         Asked once per CLI (path, size and mtime) for the whole process. Always the
         CLI, whichever backend runs the operations."""
         key = self._features_key()
@@ -145,7 +140,7 @@ class GaiaDesk(Base):
         return info  # type: ignore[return-value]
 
     def cli_features(self) -> FrozenSet[str]:
-        """What this gaiadesk-cli can do (``exec_json_stream``, ``exec_cwd``, ``run_cwd``, ...); empty for an older CLI."""
+        """What this gaiadesk-cli can do (``exec_cwd``, ``run_cwd``, ``shell_cwd``, ...)."""
         return features_of(self.cli_version_info())
 
     # devices
@@ -187,7 +182,7 @@ class GaiaDesk(Base):
         ``command`` as a str is one command line for the desk's shell; as a list,
         separate arguments. A non-zero exit is a result unless ``check=True``.
         Raises when the command never ran. ``cwd``: the directory it starts in on
-        the desk (``--cwd``; gaiadesk-cli 0.10.324+, else a UsageError).
+        the desk (``--cwd``; a CLI without the ``exec_cwd`` feature is a UsageError).
         """
         shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose, cwd=cwd)
         return self._run(self._p_exec(desk_id, command, stdin, check, shape))
@@ -207,11 +202,9 @@ class GaiaDesk(Base):
     ) -> CliStream:
         """``exec``, streaming. ``stdin=True`` keeps stdin open for ``write()``/``end()``.
 
-        With a gaiadesk-cli that has ``exec --json-stream`` (0.10.324+) the stream
-        is built from its events: the output as text, and ``result`` (route, shell,
-        an error's kind, ...) at the end. ``json_stream=False`` forces plain
-        ``exec`` (the exact bytes; no ``result``), ``True`` requires the events.
-        Older CLIs: plain ``exec``.
+        The stream is built from ``exec --json-stream``'s events: the output as
+        text, and ``result`` (route, shell, an error's kind, ...) at the end.
+        ``json_stream=False`` runs plain ``exec`` instead (the exact bytes; no ``result``).
         """
         A.exec_args(desk_id, command, stdin=False, json=False, cwd=cwd,
                     shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)  # validate first
@@ -220,13 +213,9 @@ class GaiaDesk(Base):
         if n is not None:
             shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, cwd=cwd)
             return n.stream_sync("exec", N.exec_(desk_id, command, shape), data, stdin is True)  # type: ignore[return-value]
-        need: List[Tuple[str, str]] = []
         if cwd is not None:
-            need.append((FEATURE_EXEC_CWD, "exec_stream(cwd=...)"))
-        if json_stream:
-            need.append((FEATURE_EXEC_JSON_STREAM, "exec_stream(json_stream=True)"))
-        self._require(need)
-        use_events = json_stream is not False and FEATURE_EXEC_JSON_STREAM in self.cli_features()
+            self._require([(FEATURE_EXEC_CWD, "exec_stream(cwd=...)")])
+        use_events = json_stream is not False
         a = A.exec_args(desk_id, command, stdin=stdin is not None and stdin is not False, json=False, json_stream=use_events,
                         cwd=cwd, shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
         s = self._stream(a, data, keep_open=stdin is True)
@@ -246,7 +235,7 @@ class GaiaDesk(Base):
         cwd: Optional[str] = None,
     ) -> "ExecResult":
         """``shell --json`` with ``script`` on stdin: run in the desk's shell over plain pipes; the script's exit code.
-        ``cwd``: where it starts on the desk (``--cwd``; gaiadesk-cli 0.10.324+, feature ``shell_cwd``, else a UsageError)."""
+        ``cwd``: where it starts on the desk (``--cwd``; a CLI without the ``shell_cwd`` feature is a UsageError)."""
         shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, verbose=verbose, cwd=cwd)
         return self._run(self._p_shell(desk_id, script, check, shape))
 
@@ -280,11 +269,11 @@ class GaiaDesk(Base):
                 cpu: Optional[int] = None, mem: Union[None, int, str] = None, keep_awake: Optional[bool] = None,
                 cwd: Optional[str] = None) -> "JobInfo":
         """``run --detach --json``: a named background job that outlives this connection.
-        ``cwd``: the directory it starts in on the desk (``--cwd``; gaiadesk-cli 0.10.324+, else a UsageError)."""
+        ``cwd``: the directory it starts in on the desk (``--cwd``; a CLI without the ``run_cwd`` feature is a UsageError)."""
         return self._run(self._p_run_job(desk_id, name, command, dict(priority=priority, cpu=cpu, mem=mem, keep_awake=keep_awake, cwd=cwd)))
 
     def jobs(self, desk_id: str) -> "List[JobInfo]":
-        """``ps --json``: the jobs (the CLI's ``{"jobs": [...]}``, or an older CLI's bare array)."""
+        """``ps --json``: the jobs (the list in ``{"jobs": [...]}``)."""
         return self._run(self._p_jobs(desk_id))
 
     def kill_job(self, desk_id: str, name: str) -> "JobInfo":
@@ -292,20 +281,17 @@ class GaiaDesk(Base):
         return self._run(self._p_kill_job(desk_id, name))
 
     def job_logs(self, desk_id: str, name: str, *, tail: Optional[int] = None) -> str:
-        """``logs <job> --json`` (an older CLI's plain ``logs``): its output so far, stdout and stderr together."""
+        """``logs <job> --json``: its output so far, stdout and stderr together."""
         return self._run(self._p_job_logs(desk_id, name, tail))
 
     def follow_job_logs(self, desk_id: str, name: str, *, tail: Optional[int] = None) -> CliStream:
-        """``logs -f <job>``: follow until the job ends; ``kill()`` stops following (not the job).
-        On gaiadesk-cli 0.10.324+ (``logs_json``) it runs ``logs -f --json``: the same chunks,
-        and ``result`` (``end``, ``interrupted`` or ``error``) at the end."""
+        """``logs -f --json <job>``: follow until the job ends; ``kill()`` stops following (not the job).
+        ``result`` (``end``, ``interrupted`` or ``error``) at the end."""
         a = A.logs_args(desk_id, name, tail, follow=True)
         n = self._nat()
         if n is not None:
             return n.stream_sync("job_follow", N.logs(desk_id, name, tail), None, False)  # type: ignore[return-value]
-        if FEATURE_LOGS_JSON in self.cli_features():
-            return JsonExecStream(self._stream(A.logs_args(desk_id, name, tail, follow=True, json=True)))  # type: ignore[return-value]
-        return self._stream(a)
+        return JsonExecStream(self._stream(a))  # type: ignore[return-value]
 
     # stats / measure
 
@@ -326,7 +312,7 @@ class GaiaDesk(Base):
         return self._run(self._p_create_token(desks, dict(name=name, expires=expires, scopes=scopes, cwd=cwd, low_priv=low_priv, out=out)))
 
     def list_tokens(self, desk_id: str) -> "List[TokenInfo]":
-        """``token list --json`` (owner only): the tokens (``{"tokens": [...]}``, or an older CLI's bare array)."""
+        """``token list --json`` (owner only): the tokens (the list in ``{"tokens": [...]}``)."""
         return self._run(self._p_list_tokens(desk_id))
 
     def revoke_token(self, desk_id: str, name: Optional[str] = None, *, all_for_desk: bool = False, account: bool = False) -> Dict[str, Any]:
@@ -334,7 +320,7 @@ class GaiaDesk(Base):
         return self._run(self._p_revoke_token(desk_id, name, all_for_desk, account))
 
     def audit(self, desk_id: str, *, token: Optional[str] = None, limit: Optional[int] = None, account: bool = False) -> "List[AuditEvent]":
-        """``audit --json``: what agent tokens did on the desk, newest first (``{"events": [...]}``, or a bare array)."""
+        """``audit --json``: what agent tokens did on the desk, newest first (the list in ``{"events": [...]}``)."""
         return self._run(self._p_audit(desk_id, token, limit, account))
 
     # mesh / connections
@@ -344,7 +330,7 @@ class GaiaDesk(Base):
         return self._run(self._p_mesh_status())
 
     def mesh_ip(self, desk_id: str) -> str:
-        """``mesh ip <desk> --json`` (an older CLI's text): the desk's Mesh address."""
+        """``mesh ip <desk> --json``: the desk's Mesh address."""
         return self._run(self._p_mesh_ip(desk_id))
 
     def disconnect(self, desk_id: Optional[str] = None) -> "Disconnected":
@@ -384,8 +370,8 @@ class GaiaDesk(Base):
 
     def agent_connect(self, desk_id: str) -> str:
         """``agent-connect``: prove an agent token opens a screen session (needs ``agent_token``).
-        The confirmation line ("agent session open on desk N: screenshot WxH"); from
-        ``agent-connect --json`` on gaiadesk-cli 0.10.324+."""
+        The confirmation line ("agent session open on desk N: screenshot WxH"), made
+        from ``agent-connect --json``."""
         plan = self._p_agent_connect(desk_id)
         n = self._nat()
         if n is not None:

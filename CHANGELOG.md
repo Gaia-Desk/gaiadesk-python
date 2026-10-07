@@ -2,7 +2,7 @@
 
 ## 0.1.0 (unreleased)
 
-For `gaiadesk-cli` / `gaiadesk-native` 0.10.324 (older CLIs keep working):
+For `gaiadesk-cli` / `gaiadesk-native` 0.10.324:
 
 - Types generated from the CLI's JSON Schema (`types_generated.py`, by
   GaiaDesk's `scripts/gen-sdk-types.mts`): `ExecResult`, `ExecExit`,
@@ -16,37 +16,31 @@ For `gaiadesk-cli` / `gaiadesk-native` 0.10.324 (older CLIs keep working):
   with the six kinds (`usage`, `refused`, `unreachable`, `connection_lost`,
   `failed`, `protocol`), read by `error_envelope`; errors gain `.reason` and
   `.desk`. `kind` stays the finer cause when there is one (`offline`, ...).
-  Older CLIs' shapes are still read.
 - `cwd=` on `exec`, `exec_stream` and `run_job` (`--cwd`; the native
-  library's `cwd`). With a CLI before 0.10.324 it raises `UsageError`
-  instead of running the command elsewhere.
-- `exec_stream` uses `exec --json-stream` when the CLI has it: the same
+  library's `cwd`). With a CLI without the feature it raises `UsageError`
+  (update gaiadesk-cli) instead of running the command elsewhere.
+- `exec_stream` uses `exec --json-stream`: the same
   chunks, plus `.result` (the `exit` or `error` event: route, shell, an
   error's kind). `json_stream=False` keeps the plain byte stream.
 - Feature detection: `cli_version_info()` / `cli_features()`
-  (`--version --json`, cached per CLI; an older CLI has none).
+  (`--version --json`, cached per CLI).
 - `job_logs`, `follow_job_logs`, `mesh_ip`, `disconnect` and
-  `agent_connect` use the `--json` forms of 0.10.324 (`logs_json`,
-  `mesh_ip_json`, `disconnect_json`, `agent_connect_json`), so their
-  failures are typed by the error envelope; an older CLI's text is still
-  read. `disconnect()` returns `{"closed": [...]}` (both backends);
-  `follow_job_logs` on such a CLI has `.result` (`end`, `interrupted` or
+  `agent_connect` use the `--json` forms, so their failures are typed by
+  the error envelope. `disconnect()` returns `{"closed": [...]}` (both
+  backends); `follow_job_logs` has `.result` (`end`, `interrupted` or
   `error`).
 - `cwd=` on `shell` and `shell_stream` (`shell --cwd`, feature `shell_cwd`;
-  an older CLI raises `UsageError`).
+  a CLI without it raises `UsageError`).
 - `create_token` is typed by the generated `MintResult` / `MintFileResult`
   (`TokenFileResult`, the `out=` form); `TokenCreateResult` is their union
   instead of a hand-written dict.
 - `jobs()`, `list_tokens()`, `audit()` read `{"jobs": [...]}` /
-  `{"tokens": [...]}` / `{"events": [...]}` and older bare arrays; on the
-  native backend `job_logs()` and `mesh_ip()` read the library's v2 objects.
-  Both still return what they did.
-- MCP: `gaiadesk_<tool>` names in the docs and docstrings (the dotted names
-  still resolve against older servers).
+  `{"tokens": [...]}` / `{"events": [...]}`; `job_logs()` and `mesh_ip()`
+  read `{job, output}` / `{mesh_ip}`.
+- MCP: `gaiadesk_<tool>` names; `call_tool` sends the name as given.
 - A `check=True` `CommandError` now has `kind == "failed"` on both backends.
 - `gaiadesk[native]` needs `gaiadesk-native>=0.10.324`.
-- Tests run every change against a fake CLI of 0.10.324 and one from
-  before; placeholder desk ids only.
+- Tests use placeholder desk ids only.
 
 - A native backend: with `gaiadesk-native` installed (`pip install
   gaiadesk[native]`: GaiaDesk's client library as a prebuilt extension),
@@ -67,9 +61,6 @@ First version of `gaiadesk` (Python 3.9+, sync and asyncio), over
 - Typed errors mapped from the CLI's exit codes and `--json` error kinds.
   Every error envelope the CLI prints is read in one place
   (`error_envelope`).
-- `McpClient.call_tool` / `AsyncMcpClient.call_tool` accept tool names with
-  a dot or an underscore (`gaiadesk.exec` / `gaiadesk_exec`) and send the
-  spelling the server advertises.
 - Credentials passed only through the environment, never argv.
 - Locates `gaiadesk-cli` via `$GAIADESK_CLI`, `PATH`, then the standard
   install locations.

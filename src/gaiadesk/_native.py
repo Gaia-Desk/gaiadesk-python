@@ -9,9 +9,9 @@ knows the extension's surface, which is small and generic:
     .forward(args) / .forward_sync(args)                           -> listening, stop, wait()/wait_sync()
     .screen(desk_id) / .screen_sync(desk_id)                       -> call()/call_sync(op), close()/close_sync()
     errors: an exception with .kind, .reason, .json (the CLI's error envelope,
-    ``{"error": {kind, message, reason?, desk?}}``, from 0.10.324)
+    ``{"error": {kind, message, reason?, desk?}}``)
 
-Results are the CLI's v2 ``--json`` shapes (``job_list`` ``{jobs}``,
+Results are the CLI's ``--json`` shapes (``job_list`` ``{jobs}``,
 ``job_logs`` ``{job, output}``, ...); exec/shell (call and stream) and
 job_run take an optional ``cwd``.
 """
@@ -25,6 +25,7 @@ from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Mapping, 
 from .errors import (
     GaiaDeskError,
     OperationFailedError,
+    ProtocolError,
     error_class,
     error_envelope,
     exec_outcome,
@@ -130,11 +131,12 @@ def cp_finish(op: str) -> Callable[[Any], Any]:
 
 
 def field_finish(key: str) -> Callable[[Any], Any]:
-    """A v2 object's one field (``job_logs`` -> ``output``, ``mesh_ip`` -> ``mesh_ip``); an older
-    native library's bare value as it is."""
+    """A result object's one field (``job_logs`` -> ``output``, ``mesh_ip`` -> ``mesh_ip``)."""
 
     def finish(r: Any) -> Any:
-        return r[key] if isinstance(r, dict) and key in r else r
+        if isinstance(r, dict) and isinstance(r.get(key), str):
+            return r[key]
+        raise ProtocolError("the native library returned no %r" % key, kind="protocol", argv=[key], json=r)
 
     return finish
 
@@ -147,21 +149,13 @@ def none_finish(_r: Any) -> None:
     return None
 
 
-def closed_finish(r: Any) -> Dict[str, Any]:
-    """``disconnect``: ``{"closed": [desk ids]}`` (an older native library returns nothing)."""
-    closed = r.get("closed") if isinstance(r, dict) else None
-    return {"closed": [d for d in closed if isinstance(d, str)] if isinstance(closed, list) else []}
-
-
 # ───────────────────────────── streams ─────────────────────────────
 
 
 def _error_text(result: Dict[str, Any]) -> str:
     e = result.get("error")
-    if isinstance(e, dict):
-        m = e.get("message")
-        return m if isinstance(m, str) else ""
-    return e if isinstance(e, str) else ""
+    m = e.get("message") if isinstance(e, dict) else None
+    return m if isinstance(m, str) else ""
 
 
 def _exit_of(result: Dict[str, Any], tail: str) -> Exit:

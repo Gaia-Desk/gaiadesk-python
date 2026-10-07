@@ -235,21 +235,6 @@ class ClientTest(unittest.TestCase):
         with self.assertRaises(GaiaDeskError):
             m.list_tools()
 
-    def test_mcp_tool_name_spellings(self):
-        # A server before 0.10.324: dotted names.
-        gd, _ = helpers.setup(GaiaDesk, old=True)
-        with gd.mcp() as m:
-            self.assertEqual([t["name"] for t in m.list_tools()], ["gaiadesk.exec", "gaiadesk.screenshot"])
-            self.assertEqual(tool_text(m.call_tool("gaiadesk_exec", {"desk_id": OK, "command": "hostname"})), "exit 0")
-        # 0.10.324+: gaiadesk_<tool>; the dotted spelling still resolves.
-        gd2, _ = helpers.setup(GaiaDesk)
-        with gd2.mcp() as m:
-            self.assertEqual(tool_text(m.call_tool("gaiadesk.exec", {"desk_id": OK, "command": "hostname"})), "exit 0")
-            self.assertEqual(tool_text(m.call_tool("gaiadesk_exec", {"desk_id": OK, "command": "hostname"})), "exit 0")
-            self.assertEqual(tool_image(m.call_tool("gaiadesk.screenshot", {"session_id": "h"})), {"mime_type": "image/png", "base64": "iVBORw0K"})
-            with self.assertRaises(McpError):
-                m.call_tool("gaiadesk.nope")
-
     def test_protocol_error_and_raw(self):
         with self.assertRaises(ProtocolError):
             self.gd.jobs(PLAIN)

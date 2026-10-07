@@ -19,7 +19,7 @@ from gaiadesk.errors import ErrorEnvelope, error_from_run, last_stderr_line
 
 
 class ErrorEnvelopeTest(unittest.TestCase):
-    def test_the_envelope_from_0_10_324(self):
+    def test_the_envelope(self):
         self.assertEqual(
             error_envelope({"error": {"kind": "unreachable", "message": "desk 123456789 is offline", "reason": "offline", "desk": "123456789"}}),
             ErrorEnvelope("unreachable", "desk 123456789 is offline", "offline", "123456789"),
@@ -28,12 +28,8 @@ class ErrorEnvelopeTest(unittest.TestCase):
         # exec's object with the envelope's error in it
         self.assertEqual(error_envelope({"exit": 254, "error": {"kind": "refused", "message": "no", "reason": None}}).kind, "refused")
 
-    def test_every_shape_older_clis_print(self):
-        self.assertEqual(error_envelope({"error": {"kind": "offline", "message": "desk is offline"}}), ErrorEnvelope("offline", "desk is offline"))
+    def test_a_missing_message_is_empty(self):
         self.assertEqual(error_envelope({"error": {"kind": "usage"}}), ErrorEnvelope("usage", ""))
-        self.assertEqual(error_envelope({"error": "no job named x"}), ErrorEnvelope(None, "no job named x"))
-        self.assertEqual(error_envelope({"desk": "1", "error": "the desk did not answer"}), ErrorEnvelope(None, "the desk did not answer"))
-        self.assertEqual(error_envelope({"refused": "file transfer is turned off for you"}), ErrorEnvelope(None, "file transfer is turned off for you"))
 
     def test_results_are_not_errors(self):
         for ok in (
@@ -42,6 +38,8 @@ class ErrorEnvelopeTest(unittest.TestCase):
             [{"name": "job"}],
             {"exit": 0, "error": None, "stdout": ""},  # exec success carries "error": null
             {"error": ""},
+            {"error": "text is not an envelope"},
+            {"refused": "not an envelope either"},
             {"desk": "1", "ok": True, "message": "revoked"},
             {"devices": [], "sources": [], "notes": []},
         ):
@@ -68,11 +66,11 @@ class ErrorFromRunTest(unittest.TestCase):
         self.assertEqual((odd.kind, odd.reason), ("unreachable", "solar_flare"))
         # No message: the stderr sentence.
         self.assertEqual(str(error_from_run(255, "gaiadesk-cli: why\n", [], {"error": {"kind": "usage"}})), "why")
-        # An older shape still names its desk.
-        self.assertEqual(error_from_run(255, "", [], {"desk": "345678901", "error": "the desk did not answer"}).desk, "345678901")
+        # A reply without an envelope still names its desk.
+        self.assertEqual(error_from_run(1, "", [], {"desk": "345678901", "ok": False, "message": "m"}).desk, "345678901")
 
     def test_a_kind_decides_the_class(self):
-        e = error_from_run(255, "", ["exec"], {"error": {"kind": "not_online", "message": "m"}})
+        e = error_from_run(255, "", ["exec"], {"error": {"kind": "unreachable", "message": "m", "reason": "not_online"}})
         self.assertIsInstance(e, UnreachableError)
         self.assertEqual((e.kind, e.exit_code), ("not_online", 255))
         self.assertIsInstance(error_from_run(255, "", [], {"error": {"kind": "usage", "message": "m"}}), UsageError)
@@ -83,7 +81,7 @@ class ErrorFromRunTest(unittest.TestCase):
         self.assertEqual(other.kind, "local")
 
     def test_otherwise_the_exit_code_decides_with_the_best_message(self):
-        refused = error_from_run(254, "", [], {"refused": "turned off"})
+        refused = error_from_run(254, "gaiadesk-cli: turned off\n", [], None)
         self.assertIsInstance(refused, RefusedError)
         self.assertEqual(str(refused), "turned off")
         failed = error_from_run(1, "gaiadesk-cli: no job named x\n", [], None)

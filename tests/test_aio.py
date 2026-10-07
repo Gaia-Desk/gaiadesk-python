@@ -81,12 +81,12 @@ class AsyncClientTest(unittest.TestCase):
 
         self.run_async(go())
 
-    def test_mcp_tool_name_spellings(self):
+    def test_mcp_concurrent_calls(self):
         async def go():
-            gd, _ = helpers.setup(AsyncGaiaDesk, old=True)  # dotted names
+            gd, _ = helpers.setup(AsyncGaiaDesk)
             async with await gd.mcp() as m:
                 a, b = await asyncio.gather(
-                    m.call_tool("gaiadesk.exec", {"desk_id": OK, "command": "hostname"}),
+                    m.call_tool("gaiadesk_exec", {"desk_id": OK, "command": "hostname"}),
                     m.call_tool("gaiadesk_exec", {"desk_id": OK, "command": "hostname"}),
                 )
                 self.assertEqual((tool_text(a), tool_text(b)), ("exit 0", "exit 0"))

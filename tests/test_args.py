@@ -65,7 +65,7 @@ class ArgsTest(unittest.TestCase):
     def test_jobs_stats_measure(self):
         self.assertEqual(A.ps_args("1"), ["ps", "--desk-id", "1", "--json"])
         self.assertEqual(A.kill_args("1", "build"), ["kill", "build", "--desk-id", "1", "--json"])
-        self.assertEqual(A.logs_args("1", "build", 100, True), ["logs", "build", "--desk-id", "1", "--follow", "--tail", "100"])
+        self.assertEqual(A.logs_args("1", "build", 100, True), ["logs", "build", "--desk-id", "1", "--follow", "--json", "--tail", "100"])
         self.assertEqual(A.stats_args("1"), ["stats", "--desk-id", "1", "--json"])
         self.assertEqual(A.measure_args("1", 5), ["measure", "--desk-id", "1", "--count", "5", "--json"])
         with self.assertRaises(UsageError):
@@ -87,8 +87,8 @@ class ArgsTest(unittest.TestCase):
         with self.assertRaises(UsageError):
             A.forward_args("1", [{"remote_port": 0}])
         self.assertEqual(A.mcp_args("/a", ["example.com"], "wss://x/ws"), ["mcp", "--server", "wss://x/ws", "--allow-domain", "example.com", "--audit-dir", "/a"])
-        self.assertEqual(A.disconnect_args(), ["disconnect", "--all"])
-        self.assertEqual(A.agent_connect_args("1", "wss://x/ws"), ["agent-connect", "--desk-id", "1", "--server", "wss://x/ws"])
+        self.assertEqual(A.disconnect_args(), ["disconnect", "--all", "--json"])
+        self.assertEqual(A.agent_connect_args("1", "wss://x/ws"), ["agent-connect", "--desk-id", "1", "--server", "wss://x/ws", "--json"])
 
     def test_locate(self):
         self.assertEqual(locate_cli({"GAIADESK_CLI": "/x/cli"}, "linux", lambda p: False), "/x/cli")

@@ -9,8 +9,6 @@ from . import _args as A
 from . import _native as N
 from ._core import (
     FEATURE_EXEC_CWD,
-    FEATURE_EXEC_JSON_STREAM,
-    FEATURE_LOGS_JSON,
     FEATURE_SHELL_CWD,
     VERSION_JSON_ARGS,
     Base,
@@ -23,7 +21,6 @@ from ._core import (
     not_found,
     parse_json,
     store_version_info,
-    upgraded,
     version_info_from,
 )
 from .mcp import AsyncMcpClient
@@ -78,8 +75,6 @@ class AsyncGaiaDesk(Base):
         if n is not None and plan.native is not None:
             return await n.run_async(plan.native)
         await self._require(plan.requires)
-        if plan.upgrade is not None:
-            plan = upgraded(plan, await self.cli_features())
         return plan.finish(await self._complete(plan.args, plan.input))
 
     async def _require(self, requires: Sequence[Tuple[str, str]]) -> None:
@@ -146,7 +141,7 @@ class AsyncGaiaDesk(Base):
                           shell: Optional[str] = None, timeout: Optional[A.Duration] = None,
                           connect_timeout: Optional[A.Duration] = None, persist: Optional[A.Duration] = None,
                           cwd: Optional[str] = None, json_stream: Optional[bool] = None) -> AsyncCliStream:
-        """As ``GaiaDesk.exec_stream``: ``exec --json-stream`` events when the CLI has them."""
+        """As ``GaiaDesk.exec_stream``: ``exec --json-stream`` events (plain ``exec`` with ``json_stream=False``)."""
         A.exec_args(desk_id, command, stdin=False, json=False, cwd=cwd,
                     shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)  # validate first
         data = None if stdin is None or isinstance(stdin, bool) else (stdin.encode("utf-8") if isinstance(stdin, str) else stdin)
@@ -154,13 +149,9 @@ class AsyncGaiaDesk(Base):
         if n is not None:
             shape = dict(shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist, cwd=cwd)
             return await n.stream_async("exec", N.exec_(desk_id, command, shape), data, stdin is True)  # type: ignore[return-value]
-        need: List[Tuple[str, str]] = []
         if cwd is not None:
-            need.append((FEATURE_EXEC_CWD, "exec_stream(cwd=...)"))
-        if json_stream:
-            need.append((FEATURE_EXEC_JSON_STREAM, "exec_stream(json_stream=True)"))
-        await self._require(need)
-        use_events = json_stream is not False and FEATURE_EXEC_JSON_STREAM in await self.cli_features()
+            await self._require([(FEATURE_EXEC_CWD, "exec_stream(cwd=...)")])
+        use_events = json_stream is not False
         a = A.exec_args(desk_id, command, stdin=stdin is not None and stdin is not False, json=False, json_stream=use_events,
                         cwd=cwd, shell=shell, timeout=timeout, connect_timeout=connect_timeout, persist=persist)
         s = await self._stream(a, data, keep_open=stdin is True)
@@ -209,9 +200,7 @@ class AsyncGaiaDesk(Base):
         n = self._nat()
         if n is not None:
             return await n.stream_async("job_follow", N.logs(desk_id, name, tail), None, False)  # type: ignore[return-value]
-        if FEATURE_LOGS_JSON in await self.cli_features():
-            return AsyncJsonExecStream(await self._stream(A.logs_args(desk_id, name, tail, follow=True, json=True)))  # type: ignore[return-value]
-        return await self._stream(a)
+        return AsyncJsonExecStream(await self._stream(a))  # type: ignore[return-value]
 
     async def stats(self, desk_id: str) -> "StatsReport":
         return await self._run(self._p_stats(desk_id))

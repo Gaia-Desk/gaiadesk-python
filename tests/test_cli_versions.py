@@ -1,6 +1,7 @@
-"""What changed in gaiadesk-cli 0.10.324, against a fake of it AND a fake of
-the CLI before it (fixtures/fake_cli_old.py): feature detection, the one
-error envelope, ``--cwd``, ``exec --json-stream``, the object-shaped lists."""
+"""Against the fake CLI: feature detection, the one error envelope, ``--cwd``,
+``exec --json-stream``, the object-shaped lists, the ``--json`` forms. A CLI
+too old to answer ``--version --json`` (fixtures/fake_cli_old.py) is used
+only for the "update gaiadesk-cli" checks of the ``cwd`` options."""
 
 import asyncio
 import unittest
@@ -40,7 +41,7 @@ class FeatureDetection(unittest.TestCase):
         gd, calls = helpers.setup(GaiaDesk)
         info = gd.cli_version_info()
         self.assertEqual((info["name"], info["version"]), ("gaiadesk-cli", "0.10.324"))
-        self.assertIn("v2", info["json_shapes"])
+        self.assertIn("2025-11-25", info["mcp_protocol_versions"])
         self.assertTrue({"exec_json_stream", "exec_cwd", "run_cwd", "json_error_envelope"} <= gd.cli_features())
         # Another client on the same CLI asks nothing more.
         gd2, calls2 = helpers.setup(GaiaDesk)
@@ -49,11 +50,10 @@ class FeatureDetection(unittest.TestCase):
         self.assertEqual([c["argv"] for c in calls()], [["--version", "--json"]])
         self.assertEqual([c["argv"][0] for c in calls2()], ["exec"])
 
-    def test_an_old_cli_has_no_features(self):
+    def test_a_cli_too_old_to_answer_has_no_features(self):
         gd, calls = helpers.setup(GaiaDesk, old=True)
         self.assertIsNone(gd.cli_version_info())
         self.assertEqual(gd.cli_features(), frozenset())
-        self.assertEqual(gd.version(), "gaiadesk-cli 0.10.323")
 
     def test_async(self):
         async def go():
@@ -78,17 +78,17 @@ class Cwd(unittest.TestCase):
         self.assertEqual(argvs[0], ["exec", "--desk-id", OK, "--quiet", "--json", "--no-stdin", "--cwd", "/srv/app", "--", "make"])
         self.assertEqual(argvs[1], ["run", "--detach", "--name", "build", "--desk-id", OK, "--cwd", "src", "--json", "--", "make"])
 
-    def test_an_old_cli_is_never_sent_cwd(self):
+    def test_a_cli_too_old_for_cwd_is_never_sent_it(self):
         gd, calls = helpers.setup(GaiaDesk, old=True)
         for run in (lambda: gd.exec(OK, "make", cwd="/srv"), lambda: gd.run_job(OK, "b", "make", cwd="/srv"),
                     lambda: gd.exec_stream(OK, "make", cwd="/srv")):
             with self.assertRaises(UsageError) as cm:
                 run()
             self.assertEqual(cm.exception.kind, "usage")
-            self.assertIn("0.10.324", str(cm.exception))
+            self.assertIn("Update gaiadesk-cli", str(cm.exception))
         self.assertEqual(desk_calls(calls), [], "nothing ran")
-        # Without cwd an old CLI is never asked for its features.
-        gd2, calls2 = helpers.setup(GaiaDesk, old=True)
+        # Without cwd nothing asks the CLI for its features.
+        gd2, calls2 = helpers.setup(GaiaDesk)
         gd2.exec(OK, "make")
         gd2.run_job(OK, "b", "make")
         self.assertNotIn(["--version", "--json"], [c["argv"] for c in calls2()])
@@ -121,7 +121,7 @@ class JsonStream(unittest.TestCase):
     def setUp(self):
         clear_feature_cache()
 
-    def test_events_when_the_cli_has_them(self):
+    def test_events(self):
         gd, calls = helpers.setup(GaiaDesk)
         s = gd.exec_stream(OK, "exit 2")
         self.assertIsInstance(s, JsonExecStream)
@@ -151,21 +151,15 @@ class JsonStream(unittest.TestCase):
         self.assertEqual((e.exit_code, e.stderr_tail), (255, "desk %s is offline (last seen 4 min ago)" % OFFLINE))
         self.assertEqual((s.result["event"], s.result["error"]["kind"], s.result["error"]["reason"]), ("error", "unreachable", "offline"))
 
-    def test_plain_when_asked_or_old(self):
+    def test_plain_when_asked(self):
         gd, calls = helpers.setup(GaiaDesk)
         s = gd.exec_stream(OK, "make", json_stream=False)
         self.assertIsInstance(s, CliStream)
         self.assertEqual(text_of(s), ("part1 part2 make\n", "warn\n"))
         self.assertIsNone(s.result)
         self.assertEqual(s.wait().exit_code, 0)
-        old, ocalls = helpers.setup(GaiaDesk, old=True)
-        s = old.exec_stream(OK, "exit 3")
-        self.assertIsInstance(s, CliStream)
-        self.assertEqual(text_of(s)[0], "part1 part2 exit 3\n")
-        self.assertEqual(s.wait().exit_code, 3)
-        self.assertNotIn("--json-stream", desk_calls(ocalls)[0]["argv"])
-        with self.assertRaises(UsageError):
-            old.exec_stream(OK, "x", json_stream=True)
+        self.assertNotIn("--json-stream", desk_calls(calls)[0]["argv"])
+        self.assertEqual([c["argv"][0] for c in calls()], ["exec"], "no --version probe")
 
     def test_async(self):
         async def go():
@@ -176,10 +170,6 @@ class JsonStream(unittest.TestCase):
             self.assertEqual(b"".join(c.data for c in chunks if c.stream == "stdout"), b"part1 part2 exit 4\n")
             self.assertEqual((await s.wait()).exit_code, 4)
             self.assertEqual(s.result["exit"], 4)
-            old, _ = helpers.setup(AsyncGaiaDesk, old=True)
-            s = await old.exec_stream(OK, "exit 1")
-            self.assertEqual((await s.wait()).exit_code, 1)
-            self.assertIsNone(s.result)
 
         asyncio.run(go())
 
@@ -197,7 +187,7 @@ class ShellCwd(unittest.TestCase):
         self.assertEqual(argvs[0], ["shell", "--desk-id", OK, "--quiet", "--json", "--cwd", "/srv/app"])
         self.assertEqual(argvs[1], ["shell", "--desk-id", OK, "--quiet", "--cwd", "proj"])
 
-    def test_an_old_cli_is_never_sent_shell_cwd(self):
+    def test_a_cli_too_old_for_shell_cwd_is_never_sent_it(self):
         gd, calls = helpers.setup(GaiaDesk, old=True)
         for run in (lambda: gd.shell(OK, "make", cwd="/srv"), lambda: gd.shell_stream(OK, "make", cwd="/srv")):
             with self.assertRaises(UsageError) as cm:
@@ -221,27 +211,25 @@ class ShellCwd(unittest.TestCase):
 
 
 class JsonForms(unittest.TestCase):
-    """logs / mesh ip / disconnect / agent-connect: ``--json`` where the CLI lists it, its text before; the same results."""
+    """logs / mesh ip / disconnect / agent-connect: always their ``--json`` forms."""
 
     def setUp(self):
         clear_feature_cache()
 
-    def test_same_results_either_way(self):
-        for old in (False, True):
-            with self.subTest(old=old):
-                gd, calls = helpers.setup(GaiaDesk, old=old, agent_token="gdagt_x")
-                self.assertEqual(gd.job_logs(OK, "build"), "line1\nline2\n")
-                self.assertEqual(gd.job_logs(OK, "build", tail=5), "tail\n")
-                with self.assertRaises(OperationFailedError):
-                    gd.job_logs(OK, "nope")
-                self.assertEqual(text_of_stream(gd.follow_job_logs(OK, "build")), "one\ntwo\nthree\n")
-                self.assertEqual(gd.mesh_ip(OK), "100.64.0.2")
-                with self.assertRaises(OperationFailedError):
-                    gd.mesh_ip(OFFLINE)
-                self.assertEqual(gd.disconnect(OK), {"closed": [OK]})
-                self.assertEqual(gd.agent_connect(OK), "agent session open on desk %s: screenshot 1280x800" % OK)
-                sent_json = ["--json" in c["argv"] for c in desk_calls(calls)]
-                self.assertEqual(set(sent_json), {not old}, "--json only to a CLI that lists it")
+    def test_json_forms(self):
+        gd, calls = helpers.setup(GaiaDesk, agent_token="gdagt_x")
+        self.assertEqual(gd.job_logs(OK, "build"), "line1\nline2\n")
+        self.assertEqual(gd.job_logs(OK, "build", tail=5), "tail\n")
+        with self.assertRaises(OperationFailedError):
+            gd.job_logs(OK, "nope")
+        self.assertEqual(text_of_stream(gd.follow_job_logs(OK, "build")), "one\ntwo\nthree\n")
+        self.assertEqual(gd.mesh_ip(OK), "100.64.0.2")
+        with self.assertRaises(OperationFailedError):
+            gd.mesh_ip(OFFLINE)
+        self.assertEqual(gd.disconnect(OK), {"closed": [OK]})
+        self.assertEqual(gd.agent_connect(OK), "agent session open on desk %s: screenshot 1280x800" % OK)
+        self.assertTrue(all("--json" in c["argv"] for c in calls()))
+        self.assertNotIn(["--version", "--json"], [c["argv"] for c in calls()], "no --version probe")
 
     def test_async(self):
         async def go():
@@ -264,11 +252,11 @@ def text_of_stream(s):
     return out
 
 
-class BothClis(unittest.TestCase):
-    """The same calls give the same results and errors on either CLI."""
+class Results(unittest.TestCase):
+    """Lists, exec errors and desk-operation errors."""
 
     def each(self, **opts):
-        return [helpers.setup(GaiaDesk, **opts)[0], helpers.setup(GaiaDesk, old=True, **opts)[0]]
+        return [helpers.setup(GaiaDesk, **opts)[0]]
 
     def test_lists_are_lists(self):
         for gd in self.each(code="pw"):
@@ -317,11 +305,6 @@ class BothClis(unittest.TestCase):
         with self.assertRaises(RefusedError) as cm:
             gd.run_job(REFUSED, "b", "make")
         self.assertEqual((cm.exception.kind, cm.exception.desk), ("refused", REFUSED))
-        # The old CLI: no kind, so the exit code and the stderr sentence decide.
-        old, _ = helpers.setup(GaiaDesk, old=True)
-        with self.assertRaises(GaiaDeskError) as cm:
-            old.stats(PLAIN)
-        self.assertEqual((cm.exception.kind, cm.exception.reason), ("cli_error", None))
 
 
 if __name__ == "__main__":

@@ -32,8 +32,8 @@ from gaiadesk._native import load_native  # noqa: E402
 BASE = {k: os.environ[k] for k in ("PATH", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP") if k in os.environ}
 
 
-def native(cls=GaiaDesk, old=False, **opts):
-    m, calls, clients = make_mock(old)
+def native(cls=GaiaDesk, **opts):
+    m, calls, clients = make_mock()
     opts.setdefault("env", dict(BASE))
     return cls(native=m, **opts), calls, clients
 
@@ -145,16 +145,14 @@ class Operations(unittest.TestCase):
         with self.assertRaises(UsageError):
             gd.exec(OK, "make", cwd="")
 
-    def test_v2_shapes_and_older_libraries(self):
-        for old in (False, True):
-            gd = native(old=old)[0]
-            with self.subTest(old=old):
-                self.assertEqual([j["name"] for j in gd.jobs(OK)], ["build"])
-                self.assertEqual(gd.list_tokens(OK)[0]["label"], "bot")
-                self.assertEqual(gd.audit(OK)[0]["action"], "exec.end")
-                self.assertEqual(gd.job_logs(OK, "build"), "line 1\nline 2\n")
-                self.assertEqual(gd.mesh_ip(OK), "100.64.0.1")
-                self.assertEqual(gd.disconnect(OK), {"closed": [] if old else [OK]})
+    def test_result_shapes(self):
+        gd = native()[0]
+        self.assertEqual([j["name"] for j in gd.jobs(OK)], ["build"])
+        self.assertEqual(gd.list_tokens(OK)[0]["label"], "bot")
+        self.assertEqual(gd.audit(OK)[0]["action"], "exec.end")
+        self.assertEqual(gd.job_logs(OK, "build"), "line 1\nline 2\n")
+        self.assertEqual(gd.mesh_ip(OK), "100.64.0.1")
+        self.assertEqual(gd.disconnect(OK), {"closed": [OK]})
 
     def test_errors_carry_the_envelope(self):
         gd = native()[0]
@@ -166,10 +164,6 @@ class Operations(unittest.TestCase):
         with self.assertRaises(OperationFailedError) as c:
             gd.kill_job(OK, "nope")
         self.assertEqual((c.exception.kind, c.exception.desk), ("failed", OK))
-        old = native(old=True)[0]
-        with self.assertRaises(UnreachableError) as c:
-            old.exec(OFFLINE, "x")
-        self.assertEqual((c.exception.kind, c.exception.desk), ("offline", None))
 
     def test_streams(self):
         gd, _, _ = native()

@@ -4,11 +4,8 @@ reaches the SCREEN tools (``gaiadesk_open_session``, ``gaiadesk_screenshot``,
 
 The client speaks the stateless MCP revision 2026-07-28: no ``initialize``;
 every request carries the protocol version and client capabilities in
-``params._meta``. Every gaiadesk-cli with an MCP server takes it; from
-0.10.324 the server also speaks the standard ``initialize`` lifecycle.
-
-Tool names are ``gaiadesk_<tool>`` from 0.10.324 (before: ``gaiadesk.<tool>``);
-``call_tool`` takes either and sends the one the server lists.
+``params._meta``. gaiadesk-cli mcp takes it beside the standard
+``initialize`` lifecycle. Tool names are ``gaiadesk_<tool>``.
 """
 
 from __future__ import annotations
@@ -16,10 +13,9 @@ from __future__ import annotations
 import asyncio
 import collections
 import json
-import re
 import subprocess
 import threading
-from typing import AbstractSet, Any, Deque, Dict, List, Optional, Sequence, Set
+from typing import Any, Deque, Dict, List, Optional, Sequence
 
 from ._core import not_found
 from .errors import GaiaDeskError, McpError
@@ -41,29 +37,6 @@ def with_protocol_meta(params: Optional[Dict[str, Any]] = None) -> Dict[str, Any
 
 
 _meta = with_protocol_meta
-
-
-def tool_name_alias(name: str) -> Optional[str]:
-    """The other spelling of a GaiaDesk tool name: ``gaiadesk_exec`` <-> ``gaiadesk.exec``.
-
-    ``gaiadesk_exec`` is the name from gaiadesk-cli 0.10.324 (and the one
-    model providers accept, ``[A-Za-z0-9_-]``); ``gaiadesk.exec`` the name
-    before. None for a name that is not a GaiaDesk tool.
-    """
-    m = re.match(r"^gaiadesk([._])(.+)$", name)
-    if not m:
-        return None
-    return "gaiadesk" + ("_" if m.group(1) == "." else ".") + m.group(2)
-
-
-def resolve_tool_name(name: str, advertised: Optional[AbstractSet[str]] = None) -> str:
-    """The name to send for ``name``: itself if the server advertises it, else
-    its alias if the server advertises that, else itself (the server's error
-    then says the tool is unknown). Callers may use either spelling."""
-    if advertised is None or name in advertised:
-        return name
-    alias = tool_name_alias(name)
-    return alias if alias is not None and alias in advertised else name
 
 
 def tool_text(result: Dict[str, Any]) -> str:
@@ -100,7 +73,6 @@ class McpClient:
         threading.Thread(target=self._drain, daemon=True).start()
         self._next = 1
         self._lock = threading.Lock()
-        self._tool_names: Optional[Set[str]] = None
 
     def _drain(self) -> None:
         assert self._proc.stderr is not None
@@ -137,24 +109,11 @@ class McpClient:
         return self.request("server/discover")
 
     def list_tools(self) -> List[Dict[str, Any]]:
-        tools = self.request("tools/list").get("tools", [])
-        self._tool_names = {t["name"] for t in tools if isinstance(t, dict) and isinstance(t.get("name"), str)}
-        return tools
+        return self.request("tools/list").get("tools", [])
 
     def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """A tool-level failure is a result with ``isError: True``; protocol errors raise McpError.
-
-        ``name`` may be spelled ``gaiadesk_exec`` (preferred: the name from
-        0.10.324) or ``gaiadesk.exec`` (older servers): the client sends the
-        spelling the server advertises (it fetches the tool
-        list once if ``list_tools()`` has not been called).
-        """
-        if self._tool_names is None and tool_name_alias(name) is not None:
-            try:
-                self.list_tools()
-            except McpError:
-                pass  # no list (e.g. no credential): send the name as given
-        r = self.request("tools/call", {"name": resolve_tool_name(name, self._tool_names), "arguments": arguments or {}})
+        """A tool-level failure is a result with ``isError: True``; protocol errors raise McpError."""
+        r = self.request("tools/call", {"name": name, "arguments": arguments or {}})
         r.setdefault("content", [])
         r.setdefault("isError", False)
         return r
@@ -195,7 +154,6 @@ class AsyncMcpClient:
         self._stderr: Deque[str] = collections.deque(maxlen=50)
         self._tasks: List["asyncio.Task[None]"] = []
         self._closed = False
-        self._tool_names: Optional[Set[str]] = None
 
     @classmethod
     async def start(cls, command: Sequence[str], env: Dict[str, str], cwd: Optional[str] = None) -> "AsyncMcpClient":
@@ -254,18 +212,11 @@ class AsyncMcpClient:
         return await self.request("server/discover")
 
     async def list_tools(self) -> List[Dict[str, Any]]:
-        tools = (await self.request("tools/list")).get("tools", [])
-        self._tool_names = {t["name"] for t in tools if isinstance(t, dict) and isinstance(t.get("name"), str)}
-        return tools
+        return (await self.request("tools/list")).get("tools", [])
 
     async def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """As ``McpClient.call_tool``: either tool-name spelling works."""
-        if self._tool_names is None and tool_name_alias(name) is not None:
-            try:
-                await self.list_tools()
-            except McpError:
-                pass
-        r = await self.request("tools/call", {"name": resolve_tool_name(name, self._tool_names), "arguments": arguments or {}})
+        """As ``McpClient.call_tool``."""
+        r = await self.request("tools/call", {"name": name, "arguments": arguments or {}})
         r.setdefault("content", [])
         r.setdefault("isError", False)
         return r

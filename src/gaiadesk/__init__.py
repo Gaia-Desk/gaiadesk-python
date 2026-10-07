@@ -26,7 +26,7 @@ from .errors import (
     UsageError,
     error_envelope,
 )
-from .mcp import MCP_PROTOCOL_VERSION, AsyncMcpClient, McpClient, resolve_tool_name, tool_image, tool_name_alias, tool_text
+from .mcp import MCP_PROTOCOL_VERSION, AsyncMcpClient, McpClient, tool_image, tool_text
 from .stream import AsyncCliStream, AsyncJsonExecStream, Chunk, CliStream, Exit, JsonExecStream
 
 __version__ = "0.1.0"
@@ -48,8 +48,6 @@ __all__ = [
     "MCP_PROTOCOL_VERSION",
     "tool_text",
     "tool_image",
-    "tool_name_alias",
-    "resolve_tool_name",
     "error_envelope",
     "locate_cli",
     "GaiaDeskError",
