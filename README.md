@@ -57,8 +57,18 @@ pip install "gaiadesk[native]"
 
 The `native` extra installs `gaiadesk-native`, and the SDK uses it: no
 GaiaDesk app or CLI needed. With plain `pip install gaiadesk` (or on a
-platform without a wheel) the SDK uses `gaiadesk-cli` instead: install
-GaiaDesk (it includes the CLI) from <https://gaiadesk.net/download>. The SDK
+platform without a wheel) the SDK uses `gaiadesk-cli` instead. Install the
+CLI on its own (no GaiaDesk app needed) with one of:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Gaia-Desk/gaiadesk-cli/main/install.sh | sh   # macOS, Linux
+brew install gaia-desk/tap/gaiadesk                                                         # Homebrew
+npm install -g @gaiadesk/cli                                                                # any OS with Node.js
+```
+
+(PowerShell: `irm https://raw.githubusercontent.com/Gaia-Desk/gaiadesk-cli/main/install.ps1 | iex`;
+direct downloads and checksums: [Gaia-Desk/gaiadesk-cli](https://github.com/Gaia-Desk/gaiadesk-cli).)
+The GaiaDesk app (<https://gaiadesk.net/download>) includes it too. The SDK
 finds `gaiadesk-cli` through `$GAIADESK_CLI`, then `PATH`, then the standard
 locations (`/Applications/GaiaDesk.app/Contents/MacOS/gaiadesk-cli`,
 `C:\Program Files\GaiaDesk\gaiadesk-cli.exe`, `/usr/bin/gaiadesk-cli`), or use
