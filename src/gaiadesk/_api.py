@@ -23,12 +23,14 @@ import os
 import re
 import ssl
 import time
+import uuid
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 from urllib.parse import quote, urlencode, urlsplit
 
 from . import _args as A
 from . import _api_e2e as E
-from ._api_stream import ApiStream, AsyncApiStream, SseEvent, SseParser, desk_op_exit, network_error  # noqa: F401 (re-exported)
+from . import _timeouts as T
+from ._api_stream import ApiStream, AsyncApiStream, SseEvent, SseParser, connecting, desk_op_exit, network_error  # noqa: F401 (re-exported)
 from ._native_args import mem_mb
 from .errors import (
     GaiaDeskError,
@@ -118,15 +120,27 @@ class ApiTransport:
     The HTTP layer is three methods the ``local`` and ``lan`` transports
     (``_local``) override, the operations being the same: ``headers()`` (the
     credentials), ``_connection()`` (a fresh ``http.client`` connection) and
-    ``_network_error()`` (what no connection is)."""
+    ``_network_error()`` (what no connection is).
+
+    Every wait on the network is bounded (``_timeouts``): ``response_timeout``
+    for an answer to begin, ``idle_timeout`` for each read of its body.
+    http.client never sends a request twice, and each request has a connection
+    of its own (never a pooled one), so nothing is re-sent behind the SDK's back."""
 
     transport = "api"
     """Which transport this is (``api``, ``local``, ``lan``): the client's ``backend``."""
     _e2e: Optional[E.E2e] = None
     """End-to-end policy (the ``api`` transport only; the desk's own ``local`` and ``lan`` APIs never seal)."""
+    response_timeout: Optional[float] = T.DEFAULT_RESPONSE_TIMEOUT
+    """Seconds an answer may take to begin, sending the request included (None: no limit)."""
+    idle_timeout: Optional[float] = T.DEFAULT_IDLE_TIMEOUT
+    """Seconds one read of an answer's body may wait (None: no limit)."""
+    where = "the GaiaDesk API"
+    """Who answers, in a timeout's message."""
 
     def __init__(self, api_key: str, desk_token: Optional[str] = None, base_url: Optional[str] = None, wake: Optional[int] = None,
-                 timeout: Optional[float] = None, e2e: str = "auto", e2e_keys: Optional[Mapping[str, str]] = None) -> None:
+                 e2e: str = "auto", e2e_keys: Optional[Mapping[str, str]] = None,
+                 response_timeout: Optional[float] = T.DEFAULT_RESPONSE_TIMEOUT, idle_timeout: Optional[float] = T.DEFAULT_IDLE_TIMEOUT) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
             raise UsageError("api_key must be a non-empty string", kind="usage")
         self._desk_token = check_desk_token(desk_token)
@@ -135,7 +149,7 @@ class ApiTransport:
         self._set_base(base_url or DEFAULT_API_URL, ("http", "https"), "base_url must be an http(s) URL: %r" % (base_url,))
         self._key = api_key.strip()
         self._wake = wake
-        self._timeout = timeout
+        self.set_timeouts(response_timeout, idle_timeout)
         mode, pinned = E.check_options(e2e, e2e_keys)
         self._e2e = E.E2e(self, mode, pinned)
 
@@ -155,6 +169,10 @@ class ApiTransport:
 
     # HTTP
 
+    def set_timeouts(self, response_timeout: Optional[float], idle_timeout: Optional[float]) -> None:
+        """Check and set ``response_timeout`` / ``idle_timeout`` (seconds; None: no limit)."""
+        self.response_timeout, self.idle_timeout = T.check(response_timeout, idle_timeout)
+
     def headers(self) -> Dict[str, str]:
         """Every request's headers: the API key, and the desk token when there is one."""
         h = {"Authorization": "Bearer " + self._key, "User-Agent": "gaiadesk-python"}
@@ -164,12 +182,18 @@ class ApiTransport:
 
     def _connection(self) -> http.client.HTTPConnection:
         if self._https:
-            return http.client.HTTPSConnection(self._host, self._port, timeout=self._timeout, context=ssl.create_default_context())
-        return http.client.HTTPConnection(self._host, self._port, timeout=self._timeout)
+            return http.client.HTTPSConnection(self._host, self._port, timeout=self.response_timeout, context=ssl.create_default_context())
+        return http.client.HTTPConnection(self._host, self._port, timeout=self.response_timeout)
 
     def _network_error(self, e: BaseException, op: str) -> GaiaDeskError:
         """The error for a request that got no (complete) answer."""
         return network_error(e, self.base_url, op)
+
+    def body_error(self, e: BaseException, op: str) -> GaiaDeskError:
+        """The error for a read of an answer's body that failed: ``idle_timeout`` ran out, or the connection went."""
+        if T.is_timeout(e):
+            return T.idle_timed_out(self.where, op, self.idle_timeout)
+        return self._network_error(e, op)
 
     def open(self, method: str, path: str, *, query: Optional[Dict[str, Any]] = None, json: Any = None, body: Any = None,
              length: Optional[int] = None, accept: str = "application/json", headers: Optional[Mapping[str, str]] = None,
@@ -195,18 +219,37 @@ class ApiTransport:
             if length is not None:
                 h["Content-Length"] = str(length)
         conn = self._connection()
+        watch = T.ResponseWatch(conn, self.response_timeout)
         try:
+            conn.connect()
+            watch.check()
+            sock = conn.sock
+            connecting(conn)  # a stream being started can now be stopped (kill)
+            if sock is not None and self.response_timeout is not None:
+                # The watch bounds sending and the wait for headers; the socket's own timeout only backs it up.
+                sock.settimeout(self.response_timeout + 5)
             conn.request(method, url, body=payload, headers=h)
             resp = conn.getresponse()
+            watch.done()
+            # The answer began: from here on every read of its body waits at most idle_timeout.
+            # (The socket, not conn.sock: http.client hands it to the response when it will close.)
+            if sock is not None:
+                sock.settimeout(self.idle_timeout)
         except (OSError, http.client.HTTPException) as e:
+            watch.done_quietly()
             conn.close()
+            if watch.fired or T.is_timeout(e):
+                raise T.response_timed_out(self.where, op, self.response_timeout) from e
             raise self._network_error(e, op) from e
         except BaseException:
+            watch.done_quietly()
             conn.close()
             raise
         if resp.status >= 400:
             try:
                 data = resp.read()
+            except (OSError, http.client.HTTPException):
+                data = b""  # the status is the answer; its envelope did not arrive
             finally:
                 conn.close()
             if seal is not None:
@@ -228,7 +271,7 @@ class ApiTransport:
         try:
             data = resp.read()
         except (OSError, http.client.HTTPException) as e:
-            raise self._network_error(e, op) from e
+            raise self.body_error(e, op) from e
         finally:
             conn.close()
         try:
@@ -283,7 +326,7 @@ class ApiTransport:
         spec = self.exec_spec(command, stdin, shape)
         op = E.DeskOp(A.check_desk(desk_id), "exec", {"spec": spec, "stream": True}, "POST", path, json=spec, query={"stream": 1},
                       sealed_query={"stream": 1}, accept="text/event-stream")
-        return ApiStream(op.label, "exec", lambda: self._stream(op, "exec"))
+        return ApiStream(op.label, "exec", lambda: self._stream(op, "exec"), body_error=lambda e: self.body_error(e, op.label))
 
     def _stream(self, op: E.DeskOp, kind: str) -> Tuple[Any, ...]:
         conn, resp, seal = E.send(self, op)
@@ -331,7 +374,7 @@ class ApiTransport:
                                      query={"path": remote}, accept="application/octet-stream"))
 
     def _read_sealed_file(self, resp: http.client.HTTPResponse, seal: Any, write: Any) -> Any:
-        return E.read_sealed_file(resp, seal, write, "GET files", lambda e: self._network_error(e, "GET files"))
+        return E.read_sealed_file(resp, seal, write, "GET files", lambda e: self.body_error(e, "GET files"))
 
     def download_bytes(self, desk_id: str, remote: str) -> bytes:
         """``GET /desks/{id}/files?path=``: the file's bytes."""
@@ -343,7 +386,7 @@ class ApiTransport:
                 return bytes(buf)
             return resp.read()
         except (OSError, http.client.HTTPException) as e:
-            raise self._network_error(e, "GET files") from e
+            raise self.body_error(e, "GET files") from e
         finally:
             conn.close()
 
@@ -352,31 +395,47 @@ class ApiTransport:
         started = time.monotonic()
         conn, resp, seal = self._get_file(desk_id, remote)
         dest = os.path.join(local, _basename(remote)) if local.endswith(("/", os.sep)) or os.path.isdir(local) else local
+        # Written beside the destination and renamed into place once complete: a download that
+        # fails part-way leaves no partial file (and an existing file as it was).
+        part = os.path.join(os.path.dirname(dest), ".%s.%s.gaiadesk-part" % (os.path.basename(dest), uuid.uuid4().hex[:12]))
         n = 0
         try:
             try:
-                f = open(dest, "wb")
+                f = open(part, "xb")
             except OSError as e:
                 raise GaiaDeskError("cannot write %s: %s" % (dest, e), kind="local", argv=["download"]) from e
-            with f:
-                if seal is not None:
-                    counted = [0]
+            complete = False
+            try:
+                with f:
+                    if seal is not None:
+                        counted = [0]
 
-                    def write(b: bytes) -> None:
-                        f.write(b)
-                        counted[0] += len(b)
+                        def write(b: bytes) -> None:
+                            f.write(b)
+                            counted[0] += len(b)
 
-                    self._read_sealed_file(resp, seal, write)
-                    n = counted[0]
-                while seal is None:
+                        self._read_sealed_file(resp, seal, write)
+                        n = counted[0]
+                    while seal is None:
+                        try:
+                            chunk = resp.read(1 << 20)
+                        except (OSError, http.client.HTTPException) as e:
+                            raise self.body_error(e, "GET files") from e
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        n += len(chunk)
+                try:
+                    os.replace(part, dest)
+                except OSError as e:
+                    raise GaiaDeskError("cannot write %s: %s" % (dest, e), kind="local", argv=["download"]) from e
+                complete = True
+            finally:
+                if not complete:
                     try:
-                        chunk = resp.read(1 << 20)
-                    except (OSError, http.client.HTTPException) as e:
-                        raise self._network_error(e, "GET files") from e
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    n += len(chunk)
+                        os.unlink(part)
+                    except OSError:
+                        pass
         finally:
             conn.close()
         return {"direction": "download", "desk": A.check_desk(desk_id), "destination": dest, "files": 1, "dirs": 0, "bytes": n,
@@ -451,7 +510,7 @@ class ApiTransport:
         path = "%s/jobs/%s/logs" % (self.desk(desk_id), quote(name, safe=""))
         op = E.DeskOp(A.check_desk(desk_id), "job_logs", self._logs_request(name, tail, True), "GET", path, query={"follow": 1, "tail": tail},
                       sealed_query={"follow": 1}, accept="text/event-stream")
-        return ApiStream(op.label, "logs", lambda: self._stream(op, "logs"), name)
+        return ApiStream(op.label, "logs", lambda: self._stream(op, "logs"), name, body_error=lambda e: self.body_error(e, op.label))
 
     def stats(self, desk_id: str) -> Any:
         return self.desk_call(E.DeskOp(A.check_desk(desk_id), "stats", {}, "GET", self.desk(desk_id) + "/stats"))

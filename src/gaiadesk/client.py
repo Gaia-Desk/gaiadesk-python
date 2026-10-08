@@ -117,6 +117,15 @@ class GaiaDesk(Base):
     * ``e2e_keys``: ``{desk_id: e2e_pub}`` to pin desks' keys; a different key from
       the server is an ``EndToEndError`` and nothing is sent.
 
+    Timeouts (the ``api``, ``local`` and ``lan`` transports), in seconds, None for no limit:
+
+    * ``response_timeout``: the longest wait for an answer to begin, sending the request
+      included (default 960: 16 minutes, above the API's 15-minute call limit). Exceeded:
+      ``UnreachableError``, kind ``timeout``.
+    * ``idle_timeout``: the longest silence while reading an answer's body (JSON, a
+      download, an event stream; default 90: streams and held waits keep alive every 15 s).
+      Exceeded: ``ConnectionLostError``, kind ``timeout``; a stream ends with that error.
+
     The same operations, results and errors, served by a desk itself (``transport=``):
 
     * ``transport="local"``: code on the desk talks to its own GaiaDesk over the Unix

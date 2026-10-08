@@ -16,8 +16,19 @@ import socket
 import threading
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple, Union
 
-from .errors import GaiaDeskError, UnreachableError, UsageError, error_envelope
+from .errors import KINDS, GaiaDeskError, UnreachableError, UsageError, error_class, error_envelope
 from .stream import Chunk, Exit
+
+_CONNECTING = threading.local()
+
+
+def connecting(conn: Any) -> None:
+    """Called by the transport with each connection it opens: one an ``ApiStream`` starting on
+    this thread can stop (``kill()``) before its answer has begun."""
+    hook = getattr(_CONNECTING, "hook", None)
+    if hook is not None:
+        hook(conn)
+
 
 def desk_op_exit(kind: str) -> int:
     """gaiadesk-cli's exit code for a desk operation that failed with this kind."""
@@ -118,7 +129,8 @@ def _error_object(e: GaiaDeskError) -> Dict[str, Any]:
         if env.desk:
             out["desk"] = env.desk
         return out
-    kind = {"network": "unreachable", "e2e": "protocol"}.get(e.kind, e.kind)
+    # One of the six kinds: a transport error's finer kind (network, timeout, e2e) by its class.
+    kind = e.kind if e.kind in KINDS else next((k for k in KINDS if isinstance(e, error_class(k))), {"e2e": "protocol"}.get(e.kind, e.kind))
     out = {"kind": kind, "message": str(e)}
     if e.reason:
         out["reason"] = e.reason
@@ -128,10 +140,14 @@ def _error_object(e: GaiaDeskError) -> Dict[str, Any]:
 class ApiStream:
     """An SSE stream from the API with ``JsonExecStream``'s shape: ``Chunk``s,
     ``text()``, ``wait()`` for the ``Exit``, and ``result`` (the last event:
-    ``exit`` / ``error`` for exec, ``end`` / ``interrupted`` / ``error`` for logs)."""
+    ``exit`` / ``error`` for exec, ``end`` / ``interrupted`` / ``error`` for logs).
+    ``body_error``: the error for a failed read of the events (``idle_timeout`` ran out,
+    or the connection went), which ends the stream."""
 
-    def __init__(self, op: str, kind: str, start: Callable[[], Tuple[Any, ...]], job_name: str = "") -> None:
+    def __init__(self, op: str, kind: str, start: Callable[[], Tuple[Any, ...]], job_name: str = "",
+                 body_error: Optional[Callable[[BaseException], GaiaDeskError]] = None) -> None:
         self.argv = [op]
+        self._body_error = body_error
         self.result: Optional[Dict[str, Any]] = None
         self._kind = kind
         self._job = job_name
@@ -145,10 +161,19 @@ class ApiStream:
         self._thread = threading.Thread(target=self._pump, args=(start,), daemon=True)
         self._thread.start()
 
+    def _connecting(self, conn: Any) -> None:
+        self._conn = conn
+        if self._killed:
+            self.kill()
+
     def _pump(self, start: Callable[[], Tuple[Any, ...]]) -> None:
         try:
             # (connection, response) or, for a sealed stream, (…, its EventMapper).
-            started = start()
+            _CONNECTING.hook = self._connecting
+            try:
+                started = start()
+            finally:
+                _CONNECTING.hook = None
             self._conn, resp = started[0], started[1]
             self._resp = resp
             self._mapper = started[2] if len(started) > 2 else None
@@ -175,7 +200,12 @@ class ApiStream:
         dec = codecs.getincrementaldecoder("utf-8")("replace")
         read = getattr(resp, "read1", None)
         while True:
-            data = read(65536) if read is not None else resp.readline()
+            try:
+                data = read(65536) if read is not None else resp.readline()
+            except (OSError, http.client.HTTPException) as e:
+                if self._killed or self._body_error is None:
+                    raise
+                raise self._body_error(e) from e
             if self._killed:
                 raise OSError("stopped")
             if not data:

@@ -171,6 +171,29 @@ What it serves, with the same results and errors as the CLI transport:
   `verbose` do not apply. `create_token` needs a `name` over the API (and
   defaults `expires` to 7 days, `scopes` to exec, cp, jobs).
 
+**Timeouts** (`response_timeout=` and `idle_timeout=`, in seconds, on the
+`api`, `local` and `lan` transports; `None` is no limit) make a server or
+proxy that stops answering an error, never a hang:
+
+- `response_timeout` (default 960: 16 minutes, above the API's 15-minute
+  call limit): the longest wait for an answer to begin, connecting and
+  sending the request included. Exceeded: `UnreachableError`, kind
+  `timeout`.
+- `idle_timeout` (default 90; streams and held waits send a keep-alive every
+  15 s): the longest silence while reading an answer's body (JSON, a
+  download, an event stream). It bounds each read, not the whole body, so a
+  large download that keeps flowing never times out. Exceeded mid-answer:
+  `ConnectionLostError`, kind `timeout` (a stream ends with that error: its
+  `result` is an `error` event, kind `connection_lost`, reason `timeout`,
+  exit 255). A `download` that fails part-way leaves no partial file.
+- A connection closed or reset before any answer is an `UnreachableError`
+  (kind `network`) at once. Nothing is sent twice: the SDK does not retry a
+  lost connection, a timeout or an HTTP failure (only the two end-to-end
+  retries below), and Python's `http.client` never re-sends a request itself
+  (each request has a connection of its own, none pooled), so `exec`,
+  uploads, jobs and tokens reach the desk at most once.
+- `kill()` on a stream stops it at any point, before its answer has begun too.
+
 **Not available over the API** (a `UsageError`, kind `usage`, saying "not
 available over the API transport; use the CLI or native transport"):
 `shell`, `shell_stream`, `forward`, `agent_connect`, `mcp`, `measure`,

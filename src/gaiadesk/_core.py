@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Mapping,
 
 from . import _args as A
 from . import _native as N
+from ._timeouts import DEFAULT_IDLE_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT
 if TYPE_CHECKING:  # _api imports stream, which imports this module: loaded on first use instead
     from ._api import ApiTransport
 
@@ -391,6 +392,8 @@ class Base:
         token: Optional[str] = None,
         e2e: Optional[str] = None,
         e2e_keys: Optional[Mapping[str, str]] = None,
+        response_timeout: Optional[float] = DEFAULT_RESPONSE_TIMEOUT,
+        idle_timeout: Optional[float] = DEFAULT_IDLE_TIMEOUT,
     ) -> None:
         self._api: "Optional[ApiTransport]" = None
         if transport is None:
@@ -406,6 +409,9 @@ class Base:
             if transport == "direct" and set(extra) <= {"desk_token", "base_url", "wake", "e2e", "e2e_keys"}:
                 raise UsageError("desk_token, base_url, wake, e2e and e2e_keys are for the API transport: give api_key too", kind="usage")
             raise UsageError("%s %s not for the %s transport" % (", ".join(extra), "is" if len(extra) == 1 else "are", transport), kind="usage")
+        if transport == "direct" and (response_timeout != DEFAULT_RESPONSE_TIMEOUT or idle_timeout != DEFAULT_IDLE_TIMEOUT):
+            raise UsageError("response_timeout and idle_timeout are for the api, local and lan transports", kind="usage")
+        timeouts = dict(response_timeout=response_timeout, idle_timeout=idle_timeout)
         if transport != "direct" and (backend is not None or cli is not None or native is not None):
             what = "api_key" if transport == "api" and api_key is not None else "transport=%r" % transport
             raise UsageError("%s selects the %s transport; it cannot be combined with backend, cli or native" % (what, transport), kind="usage")
@@ -414,15 +420,15 @@ class Base:
 
             if api_key is None:
                 raise UsageError("the api transport needs api_key", kind="usage")
-            self._api = ApiTransport(api_key, desk_token, base_url, wake, e2e=e2e or "auto", e2e_keys=e2e_keys)
+            self._api = ApiTransport(api_key, desk_token, base_url, wake, e2e=e2e or "auto", e2e_keys=e2e_keys, **timeouts)
         elif transport == "local":
             from ._local import LocalTransport
 
-            self._api = LocalTransport(desk_token, token, socket_path, environ=env)
+            self._api = LocalTransport(desk_token, token, socket_path, environ=env, **timeouts)
         elif transport == "lan":
             from ._local import LanTransport
 
-            self._api = LanTransport(base_url, fingerprint, desk_token)  # type: ignore[arg-type]
+            self._api = LanTransport(base_url, fingerprint, desk_token, **timeouts)  # type: ignore[arg-type]
         self._backend_opt = backend
         self._native_mod = native
         self._native: Any = False  # False: not decided yet; None: the CLI

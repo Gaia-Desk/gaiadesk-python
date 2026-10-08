@@ -25,10 +25,12 @@ import os
 import re
 import socket
 import ssl
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from . import _timeouts as T
 from ._api import ApiTransport, check_desk_token
 from .errors import GaiaDeskError, UnreachableError, UsageError
 
@@ -143,42 +145,73 @@ class UnixHTTPConnection(http.client.HTTPConnection):
 class _PipeReader(io.RawIOBase):
     """The read side of a pipe for ``makefile()``: closing it leaves the pipe open."""
 
-    def __init__(self, f: Any) -> None:
+    def __init__(self, pipe: "PipeSocket") -> None:
         super().__init__()
-        self._f = f
+        self._pipe = pipe
 
     def readable(self) -> bool:
         return True
 
     def readinto(self, b: Any) -> Optional[int]:
         try:
-            return self._f.readinto(b)
+            return self._pipe._timed(self._pipe._f.readinto, b)
         except BrokenPipeError:
             return 0  # the server closed its end: the end of the answer
 
 
 class PipeSocket:
-    """A Windows named pipe opened as a file, with the socket methods ``http.client`` uses."""
+    """A Windows named pipe opened as a file, with the socket methods ``http.client`` uses.
+    ``settimeout`` bounds each read and write as a socket's timeout does: a watchdog thread
+    cancels the pipe's I/O when one blocks longer, and it raises ``socket.timeout``."""
 
     def __init__(self, f: Any) -> None:
         self._f = f
+        self._timeout: Optional[float] = None
+        self._cv = threading.Condition()
+        self._deadline: Optional[float] = None  # while a read or write is blocked
+        self._expired = False
+        self._closed = False
+        self._watchdog: Optional[threading.Thread] = None
 
-    def sendall(self, data: bytes) -> None:
-        view = memoryview(data)
-        while view:
-            n = self._f.write(view)
-            if not n:
-                raise BrokenPipeError("the local API's pipe took no bytes")
-            view = view[n:]
+    def _timed(self, io_call: Any, arg: Any) -> Any:
+        """``io_call(arg)``, cancelled after the timeout (``socket.timeout``)."""
+        t = self._timeout
+        if t is None:
+            return io_call(arg)
+        with self._cv:
+            self._deadline, self._expired = time.monotonic() + t, False
+            if self._watchdog is None:
+                self._watchdog = threading.Thread(target=self._watch, daemon=True)
+                self._watchdog.start()
+            self._cv.notify()
+        try:
+            r = io_call(arg)
+        except OSError:
+            if self._expired:
+                raise socket.timeout("timed out") from None
+            raise
+        finally:
+            with self._cv:
+                self._deadline = None
+        if self._expired:
+            raise socket.timeout("timed out")
+        return r
 
-    def makefile(self, mode: str = "rb", *a: Any, **kw: Any) -> io.BufferedReader:
-        return io.BufferedReader(_PipeReader(self._f))
+    def _watch(self) -> None:
+        with self._cv:
+            while not self._closed:
+                if self._deadline is None:
+                    self._cv.wait()
+                    continue
+                left = self._deadline - time.monotonic()
+                if left > 0:
+                    self._cv.wait(left)
+                    continue
+                self._expired, self._deadline = True, None
+                self._cancel()
 
-    def settimeout(self, _t: Any) -> None:
-        """Pipes have no timeout here."""
-
-    def shutdown(self, _how: int) -> None:
-        """Stop a read blocked on another thread (``ApiStream.kill``), then close."""
+    def _cancel(self) -> None:
+        """Stop the pipe's I/O blocked on another thread (Windows: ``CancelIoEx``)."""
         try:
             import ctypes
             import msvcrt
@@ -186,9 +219,31 @@ class PipeSocket:
             ctypes.windll.kernel32.CancelIoEx(msvcrt.get_osfhandle(self._f.fileno()), None)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001 (best effort)
             pass
+
+    def sendall(self, data: bytes) -> None:
+        view = memoryview(data)
+        while view:
+            n = self._timed(self._f.write, view)
+            if not n:
+                raise BrokenPipeError("the local API's pipe took no bytes")
+            view = view[n:]
+
+    def makefile(self, mode: str = "rb", *a: Any, **kw: Any) -> io.BufferedReader:
+        return io.BufferedReader(_PipeReader(self))
+
+    def settimeout(self, t: Any) -> None:
+        """Each later read and write may block at most ``t`` seconds (None: no limit)."""
+        self._timeout = t if isinstance(t, (int, float)) and not isinstance(t, bool) else None
+
+    def shutdown(self, _how: int) -> None:
+        """Stop a read blocked on another thread (``ApiStream.kill``, ``response_timeout``), then close."""
+        self._cancel()
         self.close()
 
     def close(self) -> None:
+        with self._cv:
+            self._closed = True
+            self._cv.notify()
         try:
             self._f.close()
         except OSError:
@@ -218,6 +273,7 @@ class PipeHTTPConnection(http.client.HTTPConnection):
                     continue
                 raise
         self.sock = PipeSocket(f)  # type: ignore[assignment]
+        self.sock.settimeout(self.timeout)
 
 
 class PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -254,7 +310,8 @@ class LocalTransport(ApiTransport):
     transport = "local"
 
     def __init__(self, desk_token: Optional[str] = None, token: Optional[str] = None, socket_path: Optional[str] = None,
-                 timeout: Optional[float] = None, environ: Optional[Mapping[str, str]] = None) -> None:
+                 environ: Optional[Mapping[str, str]] = None, response_timeout: Optional[float] = T.DEFAULT_RESPONSE_TIMEOUT,
+                 idle_timeout: Optional[float] = T.DEFAULT_IDLE_TIMEOUT) -> None:
         self._desk_token = check_desk_token(desk_token)
         if token is not None and (not isinstance(token, str) or not token.strip()):
             raise UsageError("token must be a non-empty string (the desk's local admin token, gdlocal_…)", kind="usage")
@@ -269,7 +326,8 @@ class LocalTransport(ApiTransport):
         self.base_url = ("pipe:" if self._pipe else "unix:") + self.address
         self._prefix = "/v1"
         self._wake = None
-        self._timeout = timeout
+        self.where = "GaiaDesk's local API (%s)" % self.address
+        self.set_timeouts(response_timeout, idle_timeout)
 
     def admin_token(self) -> str:
         """The desk's local admin token: ``token=``, else the ``api-token`` file (read on every request: it changes when the app does)."""
@@ -298,8 +356,8 @@ class LocalTransport(ApiTransport):
 
     def _connection(self) -> http.client.HTTPConnection:
         if self._pipe:
-            return PipeHTTPConnection(self.address, self._timeout)
-        return UnixHTTPConnection(self.address, self._timeout)
+            return PipeHTTPConnection(self.address, self.response_timeout)
+        return UnixHTTPConnection(self.address, self.response_timeout)
 
     def _network_error(self, e: BaseException, op: str) -> GaiaDeskError:
         if isinstance(e, (FileNotFoundError, ConnectionRefusedError)):
@@ -314,7 +372,8 @@ class LanTransport(ApiTransport):
 
     transport = "lan"
 
-    def __init__(self, base_url: str, fingerprint: str, desk_token: Optional[str], timeout: Optional[float] = None) -> None:
+    def __init__(self, base_url: str, fingerprint: str, desk_token: Optional[str],
+                 response_timeout: Optional[float] = T.DEFAULT_RESPONSE_TIMEOUT, idle_timeout: Optional[float] = T.DEFAULT_IDLE_TIMEOUT) -> None:
         if not isinstance(base_url, str) or not base_url:
             raise UsageError("the lan transport needs base_url (https://<desk>:7443/v1, from the desk's Settings)", kind="usage")
         self._set_base(base_url, ("https",), "the lan transport's base_url must be an https:// URL: %r" % (base_url,))
@@ -326,14 +385,15 @@ class LanTransport(ApiTransport):
             raise UsageError("the lan transport needs desk_token (a scoped agent token, gdagt_…): the LAN gateway takes agent tokens only",
                              kind="usage")
         self._wake = None
-        self._timeout = timeout
+        self.where = "the desk's LAN gateway (%s)" % self.base_url
+        self.set_timeouts(response_timeout, idle_timeout)
 
     def headers(self) -> Dict[str, str]:
         """The agent token as ``X-GaiaDesk-Desk-Token``; no Authorization."""
         return {"User-Agent": "gaiadesk-python", "X-GaiaDesk-Desk-Token": self._desk_token or ""}
 
     def _connection(self) -> http.client.HTTPConnection:
-        return PinnedHTTPSConnection(self._host, self._port, self.fingerprint, self._timeout)
+        return PinnedHTTPSConnection(self._host, self._port, self.fingerprint, self.response_timeout)
 
 
 __all__ = [

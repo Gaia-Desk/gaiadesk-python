@@ -20,6 +20,7 @@ from .aio import AsyncForward, AsyncGaiaDesk
 from .client import Forward, GaiaDesk
 from ._api import API_FILE_LIMIT, DEFAULT_API_URL, ApiStream, AsyncApiStream
 from ._core import TRANSPORTS, Completed, locate_cli
+from ._timeouts import DEFAULT_IDLE_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT
 from ._local import (
     FingerprintMismatchError,
     certificate_fingerprint,
@@ -48,7 +49,7 @@ from .errors import (
 from .mcp import MCP_PROTOCOL_VERSION, AsyncMcpClient, McpClient, tool_image, tool_text
 from .stream import AsyncCliStream, AsyncJsonExecStream, Chunk, CliStream, Exit, JsonExecStream
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "GaiaDesk",
@@ -63,6 +64,8 @@ __all__ = [
     "AsyncApiStream",
     "DEFAULT_API_URL",
     "API_FILE_LIMIT",
+    "DEFAULT_RESPONSE_TIMEOUT",
+    "DEFAULT_IDLE_TIMEOUT",
     "TRANSPORTS",
     "normalize_fingerprint",
     "certificate_fingerprint",

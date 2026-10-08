@@ -1,6 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
+
+- **Never hangs on a dropped or stalled connection** (`api`, `local` and
+  `lan` transports). Before, a server or proxy that went silent — before
+  answering, or mid-answer with the socket left open (a JSON result, a
+  download, an event stream) — blocked the call forever: the connections
+  had no timeout. Now `response_timeout=` (seconds, default 960: above the
+  API's 15-minute call limit) bounds the wait for an answer to begin,
+  connecting and sending the request included (`UnreachableError`, kind
+  `timeout`), and `idle_timeout=` (default 90; streams and held waits keep
+  alive every 15 s) every read of its body (`ConnectionLostError`, kind
+  `timeout`; a stream ends with an `error` result, kind `connection_lost`,
+  reason `timeout`, exit 255). `None` is no limit; anything else not
+  positive is a `UsageError`. New `DEFAULT_RESPONSE_TIMEOUT` /
+  `DEFAULT_IDLE_TIMEOUT`. Proven on a raw-socket server: closed or reset
+  before any response byte (an `UnreachableError`, kind `network`, at once;
+  every request, an upload or `exec` included, reaches the server exactly
+  once), stalled mid-body, mid-JSON, mid-stream (plain and sealed), and
+  silent; 300 dropped requests in a row never hang. On Windows' named pipe
+  (`local`) a watchdog cancels a read or write that blocks too long.
+- A `download` that fails part-way leaves no partial file (it is written
+  beside the destination and renamed into place when complete; an existing
+  file is left as it was).
+- `kill()` stops an API stream before its answer has begun too (it used to
+  wait for the answer).
+- An error answer whose body cannot be read is the status's `ProtocolError`,
+  not a raw `OSError`.
 
 - **End-to-end encryption on the API transport.** With the new `e2e` extra
   (`pip install "gaiadesk[e2e]"`, which adds `cryptography`), every desk
