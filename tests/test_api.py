@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import helpers
 from helpers import OFFLINE, OK, PLAIN, USAGE
@@ -61,7 +62,9 @@ class Choosing(unittest.TestCase):
         self.assertEqual(gd.backend, "cli")
         self.assertEqual(gd.exec(OK, "hostname")["stdout"], "ran: hostname\n")
         self.assertEqual(gd.version(), "gaiadesk-cli 0.10.324")
-        self.assertEqual(GaiaDesk(env=helpers.base_env("/dev/null")).backend, "cli", "the default is unchanged")
+        # gaiadesk_native forced absent (it may be installed here, and would then be the default).
+        with mock.patch("gaiadesk._native.load_native", return_value=(None, "not installed")):
+            self.assertEqual(GaiaDesk(env=helpers.base_env("/dev/null")).backend, "cli", "the default is unchanged")
         self.assertEqual(len(API.requests), before)
 
     def test_api_key_selects_the_api_transport(self):

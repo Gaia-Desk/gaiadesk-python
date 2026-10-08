@@ -6,6 +6,7 @@ import asyncio
 import os
 import sys
 import unittest
+from unittest import mock
 
 import helpers
 from helpers import OK
@@ -57,9 +58,9 @@ class Choosing(unittest.TestCase):
             raise ImportError("No module named 'gaiadesk_native'")
 
         self.assertEqual(load_native(missing)[0], None)
-        gd = GaiaDesk(env=dict(BASE))
-        if load_native()[0] is None:  # not installed in this environment
-            self.assertEqual(gd.backend, "cli")
+        # Absent whether or not gaiadesk_native is installed in this environment: through the loader.
+        with mock.patch("gaiadesk._native.load_native", lambda: load_native(missing)):
+            self.assertEqual(GaiaDesk(env=dict(BASE)).backend, "cli")
             with self.assertRaises(CliNotFoundError):
                 GaiaDesk(backend="native", env=dict(BASE)).backend
 
