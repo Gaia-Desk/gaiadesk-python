@@ -389,6 +389,8 @@ class Base:
         fingerprint: Optional[str] = None,
         socket_path: Optional[str] = None,
         token: Optional[str] = None,
+        e2e: Optional[str] = None,
+        e2e_keys: Optional[Mapping[str, str]] = None,
     ) -> None:
         self._api: "Optional[ApiTransport]" = None
         if transport is None:
@@ -396,13 +398,13 @@ class Base:
         if transport not in TRANSPORTS:
             raise UsageError("transport is %s (not %r)" % (", ".join(TRANSPORTS), transport), kind="usage")
         given = {k for k, v in (("api_key", api_key), ("desk_token", desk_token), ("base_url", base_url), ("wake", wake),
-                                ("fingerprint", fingerprint), ("socket_path", socket_path), ("token", token)) if v is not None}
-        allowed = {"direct": set(), "api": {"api_key", "desk_token", "base_url", "wake"},
+                                ("fingerprint", fingerprint), ("socket_path", socket_path), ("token", token), ("e2e", e2e), ("e2e_keys", e2e_keys)) if v is not None}
+        allowed = {"direct": set(), "api": {"api_key", "desk_token", "base_url", "wake", "e2e", "e2e_keys"},
                    "local": {"desk_token", "socket_path", "token"}, "lan": {"base_url", "fingerprint", "desk_token"}}[transport]
         extra = sorted(given - allowed)
         if extra:
-            if transport == "direct" and set(extra) <= {"desk_token", "base_url", "wake"}:
-                raise UsageError("desk_token, base_url and wake are for the API transport: give api_key too", kind="usage")
+            if transport == "direct" and set(extra) <= {"desk_token", "base_url", "wake", "e2e", "e2e_keys"}:
+                raise UsageError("desk_token, base_url, wake, e2e and e2e_keys are for the API transport: give api_key too", kind="usage")
             raise UsageError("%s %s not for the %s transport" % (", ".join(extra), "is" if len(extra) == 1 else "are", transport), kind="usage")
         if transport != "direct" and (backend is not None or cli is not None or native is not None):
             what = "api_key" if transport == "api" and api_key is not None else "transport=%r" % transport
@@ -412,7 +414,7 @@ class Base:
 
             if api_key is None:
                 raise UsageError("the api transport needs api_key", kind="usage")
-            self._api = ApiTransport(api_key, desk_token, base_url, wake)
+            self._api = ApiTransport(api_key, desk_token, base_url, wake, e2e=e2e or "auto", e2e_keys=e2e_keys)
         elif transport == "local":
             from ._local import LocalTransport
 

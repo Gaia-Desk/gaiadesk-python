@@ -29,6 +29,9 @@ classifiers = [
 # GaiaDesk's client library as a prebuilt extension (proprietary binary
 # licence): with it, the SDK needs no gaiadesk-cli. `pip install gaiadesk[native]`.
 native = ["gaiadesk-native>=0.10.324"]
+# End-to-end encryption of desk operations over the hosted API (cryptography:
+# Apache-2.0 OR BSD-3-Clause). `pip install "gaiadesk[e2e]"`.
+e2e = ["cryptography>=42"]
 
 [project.urls]
 Homepage = "https://github.com/Gaia-Desk/gaiadesk-python"

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **End-to-end encryption on the API transport.** With the new `e2e` extra
+  (`pip install "gaiadesk[e2e]"`, which adds `cryptography`), every desk
+  operation (exec and its stream, jobs, logs and their follow, waits
+  including held ones, stats, file upload and download, tokens) is sealed to
+  the desk's published X25519 key (HKDF-SHA256, XChaCha20-Poly1305 built from
+  HChaCha20 and the IETF ChaCha20-Poly1305), so the server relays only
+  ciphertext; results, stream events and errors are exactly the plaintext
+  call's. `e2e="auto" | "require" | "off"` (default `auto`: sealed when the
+  desk has a key, else plaintext with a warning unless the desk requires
+  it), `e2e_keys={desk_id: e2e_pub}` to pin keys, one retry on
+  `e2e_required` and one on `e2e_decrypt_failed`. New `EndToEndError`
+  (kind `e2e`). The SDK imports and works without `cryptography`.
+- The API transport's streams moved to `gaiadesk._api_stream` (still
+  importable from `gaiadesk._api`).
 - **`local` and `lan` transports.** `GaiaDesk(transport="local")` drives the
   desk the code runs on through its own `/v1` API (HTTP/1.1 over the Unix
   socket `$GAIADESK_API_DIR/api.sock` or `~/.gaiadesk/api.sock`; on Windows

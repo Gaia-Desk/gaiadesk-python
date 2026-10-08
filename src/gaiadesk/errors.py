@@ -99,6 +99,15 @@ class ProtocolError(GaiaDeskError):
     usually a GaiaDesk too old for the request."""
 
 
+class EndToEndError(GaiaDeskError):
+    """API transport: an operation could not be end-to-end encrypted, or its sealed answer did not
+    open (kind ``e2e``). ``reason`` says which: ``e2e_unavailable`` (the desk publishes no key, or
+    the ``cryptography`` package is missing, where encryption is required), ``e2e_key_mismatch``
+    (the server handed out a key other than the one pinned with ``e2e_keys``),
+    ``e2e_decrypt_failed`` / ``e2e_malformed`` (an answer was altered, reordered or not sealed).
+    Nothing is sent in the clear when this is raised before a request."""
+
+
 class CommandError(GaiaDeskError):
     """``exec``/``shell`` with ``check=True``: the remote command exited non-zero (or timed out)."""
 

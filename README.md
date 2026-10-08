@@ -42,6 +42,7 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 - [Install](#install)
 - [Backends](#backends)
 - [API transport](#api-transport)
+  - [End-to-end encryption](#end-to-end-encryption)
 - [Quickstart](#quickstart)
 - [Credentials](#credentials)
 - [API](#api)
@@ -178,6 +179,63 @@ available over the API transport; use the CLI or native transport"):
 `revoke_token(all_for_desk=True)` / `account=True`, `exec_stream` with
 `stdin=True` or `json_stream=False`, and the CLI's own `version`,
 `cli_version_info`, `cli_features`, `raw`.
+
+### End-to-end encryption
+
+```sh
+pip install "gaiadesk[e2e]"    # adds cryptography (Apache-2.0 / BSD)
+```
+
+With the `e2e` extra installed, desk operations over the API are **sealed**
+so the server relays only ciphertext: it never sees the command, its
+environment, stdin, a file's name or bytes, or any output. Nothing changes in
+your code: every method returns and raises exactly what it does in the clear.
+
+Before an operation the SDK reads the desk's key (`GET /desks/{id}`: its
+`e2e_pub` and `e2e_required`, cached for 5 minutes), makes a fresh X25519
+key pair for that one operation, derives three keys with HKDF-SHA256 and
+seals the request, an upload's bytes and every answer with
+XChaCha20-Poly1305 bound to the desk, the operation and each frame's place
+in its stream (GaiaDesk's design and test vectors: `protocol/src/e2e.rs`,
+`protocol/src/e2e/vectors.json`, both reproduced by this SDK's tests). The
+server still sees the API key and agent token, the route (operation and
+desk; job names and token ids in a path), `stream`/`follow`/`wake_s`, sizes
+and how the operation ended.
+
+```python
+gd = GaiaDesk(
+    api_key=..., desk_token=...,
+    e2e="auto",                    # the default; or "require", or "off"
+    e2e_keys={"123456789": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw"},  # optional: pin a desk's e2e_pub
+)
+```
+
+- **`e2e="auto"`** (default): sealed whenever the desk publishes a key. A desk
+  with no key (offline, or a GaiaDesk from before this), or a missing
+  `cryptography` package, is sent in the clear with a `RuntimeWarning`
+  (once) — unless the desk requires encryption (`e2e_required`, its
+  **Settings → Agent access → "Require end-to-end encryption for API
+  commands"**): then the SDK wakes it and reads its key again, and raises
+  `EndToEndError` (naming `pip install "gaiadesk[e2e]"` when that is what is
+  missing) rather than send plaintext.
+- **`e2e="require"`**: never in the clear; no key (after a wake) or no
+  `cryptography` is an `EndToEndError` (reason `e2e_unavailable`) and nothing
+  is sent.
+- **`e2e="off"`**: in the clear, as before (no key lookup).
+- **`e2e_keys`** pins keys: a different key handed out by the server is an
+  `EndToEndError` (reason `e2e_key_mismatch`) and nothing is sent. A pinned
+  key is used even when the server lists none.
+- **Retries.** A plaintext operation the desk refuses `409 e2e_required` is
+  sent again sealed, once (an upload only when its source can be read
+  again). A sealed one refused `e2e_decrypt_failed` (the desk's key changed)
+  is sealed again to the key read anew, once.
+- **Answers that do not open** (altered, reordered, replayed, or sent in the
+  clear in place of a sealed answer) are an `EndToEndError` (reason
+  `e2e_decrypt_failed` / `e2e_malformed`); in a stream, its `result` is a
+  `protocol` error. A desk's own errors are opened so their messages are the
+  desk's.
+
+The `local` and `lan` transports talk to the desk itself and never seal.
 
 ## Local and LAN
 
@@ -514,7 +572,10 @@ given (through `fake_cli_old.py` it plays a CLI too old to answer
 [`tests/fixtures/mock_native.py`](tests/fixtures/mock_native.py) does the
 same for the native library, and
 [`tests/fixtures/mock_api.py`](tests/fixtures/mock_api.py) for the hosted
-API (an `http.server` that answers every route from the same fake CLI).
+API (an `http.server` that answers every route from the same fake CLI);
+[`tests/fixtures/mock_e2e_api.py`](tests/fixtures/mock_e2e_api.py) is that API
+and a desk in one for sealed operations. The end-to-end tests need
+`cryptography` (`pip install -e ".[e2e]"`) and are skipped without it.
 [`tests/test_transports.py`](tests/test_transports.py) runs the same
 behavioural cases against the CLI and the API transport.
 

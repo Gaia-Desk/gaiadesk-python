@@ -7,38 +7,38 @@ Operations the API does not serve are a ``UsageError``.
 
 Streams (``exec_stream``, ``follow_job_logs``) are Server-Sent Events, read
 on a thread into the same Chunk / Exit / ``result`` shape as gaiadesk-cli's
-``--json-stream``; ``AsyncApiStream`` is that for asyncio.
+``--json-stream`` (``_api_stream``).
+
+Desk operations are end-to-end encrypted when the desk publishes a key and the
+optional ``cryptography`` package is installed (``e2e=``, ``_api_e2e``): the
+server then relays only ciphertext, and every method still returns and raises
+exactly what it does in the clear.
 """
 
 from __future__ import annotations
 
-import asyncio
-import codecs
 import http.client
 import json as _json
 import os
-import queue
 import re
-import socket
 import ssl
-import threading
 import time
-from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 from urllib.parse import quote, urlencode, urlsplit
 
 from . import _args as A
+from . import _api_e2e as E
+from ._api_stream import ApiStream, AsyncApiStream, SseEvent, SseParser, desk_op_exit, network_error  # noqa: F401 (re-exported)
 from ._native_args import mem_mb
 from .errors import (
     GaiaDeskError,
     OperationFailedError,
     ProtocolError,
-    UnreachableError,
     UsageError,
     error_envelope,
     error_for_kind,
     exec_outcome,
 )
-from .stream import Chunk, Exit
 
 DEFAULT_API_URL = "https://api.gaiadesk.net/v1"
 API_FILE_LIMIT = 256 * 1024 * 1024
@@ -68,10 +68,6 @@ def seconds(v: A.Duration, what: str) -> int:
     return total
 
 
-def desk_op_exit(kind: str) -> int:
-    """gaiadesk-cli's exit code for a desk operation that failed with this kind."""
-    return {"refused": 254, "failed": 1, "interrupted": 130}.get(kind, 255)
-
 
 def _opt_float(v: Optional[str]) -> Optional[float]:
     try:
@@ -100,281 +96,6 @@ def api_error(status: int, body: bytes, headers: Mapping[str, str], op: str) -> 
                           retry_after=retry_after)
 
 
-def network_error(e: BaseException, base_url: str, op: str) -> GaiaDeskError:
-    return UnreachableError("the GaiaDesk API could not be reached (%s): %s" % (base_url, e), kind="network", reason="network",
-                            exit_code=255, argv=[op])
-
-
-# ───────────────────────────── SSE ─────────────────────────────
-
-
-class SseEvent(NamedTuple):
-    event: str
-    data: str
-
-
-class SseParser:
-    """An incremental ``text/event-stream`` parser (fields, ``:`` comments, blank-line dispatch;
-    an event may be split anywhere, even between ``\\r`` and ``\\n``)."""
-
-    _EOL = re.compile(r"\r\n|\r|\n")
-
-    def __init__(self) -> None:
-        self._buf = ""
-        self._event = ""
-        self._data: List[str] = []
-
-    def feed(self, text: str) -> List[SseEvent]:
-        self._buf += text
-        out: List[SseEvent] = []
-        while True:
-            m = self._EOL.search(self._buf)
-            if not m:
-                break
-            if m.group() == "\r" and m.start() == len(self._buf) - 1:
-                break  # maybe half of \r\n: wait for the next chunk
-            line, self._buf = self._buf[: m.start()], self._buf[m.end():]
-            ev = self._line(line)
-            if ev is not None:
-                out.append(ev)
-        return out
-
-    def end(self) -> List[SseEvent]:
-        """The end of the stream: an event not finished with a blank line is still delivered."""
-        out: List[SseEvent] = []
-        if self._buf:
-            line, self._buf = self._buf.rstrip("\r"), ""
-            ev = self._line(line)
-            if ev is not None:
-                out.append(ev)
-        ev = self._line("")
-        if ev is not None:
-            out.append(ev)
-        return out
-
-    def _line(self, line: str) -> Optional[SseEvent]:
-        if line == "":
-            if not self._data:
-                self._event = ""
-                return None
-            ev = SseEvent(self._event or "message", "\n".join(self._data))
-            self._event, self._data = "", []
-            return ev
-        if line.startswith(":"):
-            return None
-        field, _, value = line.partition(":")
-        if value.startswith(" "):
-            value = value[1:]
-        if field == "event":
-            self._event = value
-        elif field == "data":
-            self._data.append(value)
-        return None
-
-
-def _object(ev: SseEvent) -> Optional[Dict[str, Any]]:
-    """An event's JSON object, with the SSE name as its ``event`` when it has none."""
-    try:
-        v = _json.loads(ev.data)
-    except ValueError:
-        return None
-    if not isinstance(v, dict):
-        return None
-    if not isinstance(v.get("event"), str):
-        v = dict(v, event=ev.event)
-    return v
-
-
-def _error_object(e: GaiaDeskError) -> Dict[str, Any]:
-    env = error_envelope(e.json)
-    if env is not None:
-        out: Dict[str, Any] = {"kind": env.kind, "message": env.message or str(e)}
-        if env.reason:
-            out["reason"] = env.reason
-        if env.desk:
-            out["desk"] = env.desk
-        return out
-    out = {"kind": "unreachable" if e.kind == "network" else e.kind, "message": str(e)}
-    if e.reason:
-        out["reason"] = e.reason
-    return out
-
-
-class ApiStream:
-    """An SSE stream from the API with ``JsonExecStream``'s shape: ``Chunk``s,
-    ``text()``, ``wait()`` for the ``Exit``, and ``result`` (the last event:
-    ``exit`` / ``error`` for exec, ``end`` / ``interrupted`` / ``error`` for logs)."""
-
-    def __init__(self, op: str, kind: str, start: Callable[[], Tuple[http.client.HTTPConnection, http.client.HTTPResponse]],
-                 job_name: str = "") -> None:
-        self.argv = [op]
-        self.result: Optional[Dict[str, Any]] = None
-        self._kind = kind
-        self._job = job_name
-        self._q: "queue.Queue[Optional[Chunk]]" = queue.Queue()
-        self._drained = False
-        self._killed = False
-        self._conn: Optional[http.client.HTTPConnection] = None
-        self._exit = Exit(None, "")
-        self._thread = threading.Thread(target=self._pump, args=(start,), daemon=True)
-        self._thread.start()
-
-    def _pump(self, start: Callable[[], Tuple[http.client.HTTPConnection, http.client.HTTPResponse]]) -> None:
-        try:
-            conn, resp = start()
-            self._conn = conn
-            if self._killed:
-                raise OSError("stopped")
-            self._exit = self._events(resp)
-        except Exception as e:  # noqa: BLE001 (an HTTP failure, the network, or kill())
-            if self._killed:
-                self._exit = Exit(130, "interrupted")
-            else:
-                err = e if isinstance(e, GaiaDeskError) else network_error(e, "", self.argv[0])
-                error = _error_object(err)
-                self.result = {"event": "error", "exit": err.exit_code, "error": error}
-                self._exit = Exit(err.exit_code, error["message"])
-        finally:
-            if self._conn is not None:
-                self._conn.close()
-            self._q.put(None)
-
-    def _events(self, resp: http.client.HTTPResponse) -> Exit:
-        parser = SseParser()
-        dec = codecs.getincrementaldecoder("utf-8")("replace")
-        read = getattr(resp, "read1", None)
-        while True:
-            data = read(65536) if read is not None else resp.readline()
-            if self._killed:
-                raise OSError("stopped")
-            if not data:
-                break
-            for ev in parser.feed(dec.decode(data)):
-                done = self._on(ev)
-                if done is not None:
-                    return done
-        for ev in parser.feed(dec.decode(b"", True)) + parser.end():
-            done = self._on(ev)
-            if done is not None:
-                return done
-        what = "command" if self._kind == "exec" else "job"
-        message = "the event stream ended before the %s did" % what
-        self.result = {"event": "error", "exit": 255, "error": {"kind": "connection_lost", "message": message}}
-        return Exit(255, message)
-
-    def _on(self, sse: SseEvent) -> Optional[Exit]:
-        o = _object(sse)
-        if o is None:
-            return None
-        kind = o.get("event")
-        if kind in ("stdout", "stderr") and self._kind == "exec" and isinstance(o.get("data"), str):
-            self._q.put(Chunk(kind, o["data"].encode("utf-8")))
-        elif kind == "output" and self._kind == "logs" and isinstance(o.get("data"), str):
-            self._q.put(Chunk("stdout", o["data"].encode("utf-8")))
-        elif kind in ("exit", "error") and self._kind == "exec":
-            self.result = o
-            e = o.get("error")
-            msg = e.get("message") if isinstance(e, dict) and isinstance(e.get("message"), str) else ""
-            return Exit(o.get("exit") if isinstance(o.get("exit"), int) else 255, msg)
-        elif kind == "end" and self._kind == "logs":
-            self.result = o
-            job = o.get("job") if isinstance(o.get("job"), dict) else {}
-            name = job.get("name") or self._job
-            if isinstance(job.get("exit_code"), int):
-                return Exit(0, "job %s exited (exit %d)" % (name, job["exit_code"]))
-            return Exit(0, "job %s %s" % (name, job.get("state", "ended")))
-        elif kind == "interrupted" and self._kind == "logs":
-            self.result = o
-            return Exit(0, "stopped following; the job goes on")
-        elif kind == "error" and self._kind == "logs":
-            e = o.get("error") if isinstance(o.get("error"), dict) else {"kind": "protocol", "message": "the desk reported an error"}
-            self.result = {"event": "error", "error": e}
-            return Exit(desk_op_exit(str(e.get("kind"))), str(e.get("message", "")))
-        return None
-
-    def __iter__(self) -> Iterator[Chunk]:
-        while not self._drained:
-            c = self._q.get()
-            if c is None:
-                self._drained = True
-                return
-            yield c
-
-    def next_chunk(self) -> Optional[Chunk]:
-        """The next chunk (blocking), or None at the end."""
-        if self._drained:
-            return None
-        c = self._q.get()
-        if c is None:
-            self._drained = True
-        return c
-
-    def text(self) -> Iterator[Tuple[str, str]]:
-        """``(stream, text)`` pairs."""
-        for c in self:
-            yield c.stream, c.data.decode("utf-8", "replace")
-
-    def write(self, data: Union[str, bytes]) -> None:
-        raise UsageError("stdin cannot be written to a command over the API transport (give stdin= as text up front)",
-                         kind="usage", argv=self.argv)
-
-    def end(self) -> None:
-        """stdin is closed from the start over the API."""
-
-    def kill(self) -> None:
-        """Stop: closes the request (the server stops the command, or stops following the job)."""
-        self._killed = True
-        conn = self._conn
-        sock = getattr(conn, "sock", None) if conn is not None else None
-        if sock is not None:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-
-    def wait(self, timeout: Optional[float] = None) -> Exit:
-        self._thread.join(timeout)
-        return self._exit
-
-
-class AsyncApiStream:
-    """``ApiStream`` for asyncio (``AsyncCliStream``'s shape); the reading happens on a thread."""
-
-    def __init__(self, stream: ApiStream) -> None:
-        self._s = stream
-        self.argv = stream.argv
-
-    @property
-    def result(self) -> Optional[Dict[str, Any]]:
-        return self._s.result
-
-    def __aiter__(self) -> AsyncIterator[Chunk]:
-        return self._iter()
-
-    async def _iter(self) -> AsyncIterator[Chunk]:
-        loop = asyncio.get_running_loop()
-        while True:
-            c = await loop.run_in_executor(None, self._s.next_chunk)
-            if c is None:
-                return
-            yield c
-
-    async def text(self) -> AsyncIterator[Tuple[str, str]]:
-        async for c in self:
-            yield c.stream, c.data.decode("utf-8", "replace")
-
-    async def write(self, data: Union[str, bytes]) -> None:
-        self._s.write(data)
-
-    def end(self) -> None:
-        self._s.end()
-
-    def kill(self) -> None:
-        self._s.kill()
-
-    async def wait(self) -> Exit:
-        return await asyncio.get_running_loop().run_in_executor(None, self._s.wait)
-
 
 # ───────────────────────────── the transport ─────────────────────────────
 
@@ -401,9 +122,11 @@ class ApiTransport:
 
     transport = "api"
     """Which transport this is (``api``, ``local``, ``lan``): the client's ``backend``."""
+    _e2e: Optional[E.E2e] = None
+    """End-to-end policy (the ``api`` transport only; the desk's own ``local`` and ``lan`` APIs never seal)."""
 
     def __init__(self, api_key: str, desk_token: Optional[str] = None, base_url: Optional[str] = None, wake: Optional[int] = None,
-                 timeout: Optional[float] = None) -> None:
+                 timeout: Optional[float] = None, e2e: str = "auto", e2e_keys: Optional[Mapping[str, str]] = None) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
             raise UsageError("api_key must be a non-empty string", kind="usage")
         self._desk_token = check_desk_token(desk_token)
@@ -413,6 +136,8 @@ class ApiTransport:
         self._key = api_key.strip()
         self._wake = wake
         self._timeout = timeout
+        mode, pinned = E.check_options(e2e, e2e_keys)
+        self._e2e = E.E2e(self, mode, pinned)
 
     def _set_base(self, url: str, schemes: Tuple[str, ...], bad: str) -> None:
         self.base_url = url.rstrip("/")
@@ -447,21 +172,25 @@ class ApiTransport:
         return network_error(e, self.base_url, op)
 
     def open(self, method: str, path: str, *, query: Optional[Dict[str, Any]] = None, json: Any = None, body: Any = None,
-             length: Optional[int] = None, accept: str = "application/json") -> Tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
-        """Send one request; an HTTP failure is raised as the typed error from its envelope."""
+             length: Optional[int] = None, accept: str = "application/json", headers: Optional[Mapping[str, str]] = None,
+             content_type: str = "application/octet-stream", seal: Any = None,
+             wake: bool = True) -> Tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+        """Send one request; an HTTP failure is raised as the typed error from its envelope (a sealed
+        operation's, ``seal``, with the desk's error opened into it). ``wake``: send ``wake_s``."""
         op = "%s %s" % (method, path)
         q = {k: v for k, v in (query or {}).items() if v is not None}
-        if self._wake is not None:
+        if self._wake is not None and wake:
             q["wake_s"] = self._wake
         url = self._prefix + path + ("?" + urlencode(q) if q else "")
         h = self.headers()
         h["Accept"] = accept
+        h.update(headers or {})
         payload: Any = None
         if json is not None:
             h["Content-Type"] = "application/json"
             payload = _json.dumps(json).encode("utf-8")
         elif body is not None:
-            h["Content-Type"] = "application/octet-stream"
+            h["Content-Type"] = content_type
             payload = body
             if length is not None:
                 h["Content-Length"] = str(length)
@@ -472,18 +201,30 @@ class ApiTransport:
         except (OSError, http.client.HTTPException) as e:
             conn.close()
             raise self._network_error(e, op) from e
+        except BaseException:
+            conn.close()
+            raise
         if resp.status >= 400:
             try:
                 data = resp.read()
             finally:
                 conn.close()
+            if seal is not None:
+                data = E.unseal_error_body(data, seal, op, resp.status)
             raise api_error(resp.status, data, resp.headers, op)
         return conn, resp
 
     def call(self, method: str, path: str, **kw: Any) -> Any:
         """A request answered with JSON."""
-        op = "%s %s" % (method, path)
-        conn, resp = self.open(method, path, **kw)
+        return self.read_json(*self.open(method, path, **kw), op="%s %s" % (method, path))
+
+    def desk_call(self, op: E.DeskOp) -> Any:
+        """A desk operation answered with JSON, sealed or not: what the plaintext call answers."""
+        conn, resp, seal = E.send(self, op)
+        r = self.read_json(conn, resp, op=op.label)
+        return r if seal is None else E.unseal_json(r, seal, op.label, resp.status)
+
+    def read_json(self, conn: http.client.HTTPConnection, resp: http.client.HTTPResponse, op: str) -> Any:
         try:
             data = resp.read()
         except (OSError, http.client.HTTPException) as e:
@@ -530,7 +271,8 @@ class ApiTransport:
     def exec(self, desk_id: str, command: A.Command, stdin: Union[None, str, bytes], check: bool, shape: Mapping[str, Any]) -> Any:
         """``POST /desks/{id}/exec``: the ExecResult (a command that never ran is its typed error)."""
         path = self.desk(desk_id) + "/exec"
-        r = self.call("POST", path, json=self.exec_spec(command, stdin, shape))
+        spec = self.exec_spec(command, stdin, shape)
+        r = self.desk_call(E.DeskOp(A.check_desk(desk_id), "exec", {"spec": spec}, "POST", path, json=spec))
         if not isinstance(r, dict) or not isinstance(r.get("exit"), int):
             raise ProtocolError("the GaiaDesk API answered exec without a result", kind="protocol", argv=["POST " + path], json=r)
         return exec_outcome(r, check, r["exit"], "", ["POST " + path])
@@ -539,7 +281,13 @@ class ApiTransport:
         """``POST /desks/{id}/exec?stream=1``: the ExecEvents as a stream."""
         path = self.desk(desk_id) + "/exec"
         spec = self.exec_spec(command, stdin, shape)
-        return ApiStream("POST " + path, "exec", lambda: self.open("POST", path, json=spec, query={"stream": 1}, accept="text/event-stream"))
+        op = E.DeskOp(A.check_desk(desk_id), "exec", {"spec": spec, "stream": True}, "POST", path, json=spec, query={"stream": 1},
+                      sealed_query={"stream": 1}, accept="text/event-stream")
+        return ApiStream(op.label, "exec", lambda: self._stream(op, "exec"))
+
+    def _stream(self, op: E.DeskOp, kind: str) -> Tuple[Any, ...]:
+        conn, resp, seal = E.send(self, op)
+        return conn, resp, (None if seal is None else E.EventMapper(seal, kind, op.desk))
 
     def upload(self, local: str, desk_id: str, remote: str) -> Any:
         """``PUT /desks/{id}/files?path=``: one local file (at most 256 MB); a ``remote`` ending in ``/`` keeps its name."""
@@ -568,22 +316,31 @@ class ApiTransport:
 
     def _put(self, desk_id: str, remote: str, body: Any, length: int) -> Any:
         path = self.desk(desk_id) + "/files"
-        r = self.call("PUT", path, query={"path": remote}, body=body, length=length)
+        r = self.desk_call(E.DeskOp(A.check_desk(desk_id), "file_put", {"path": remote, "size": length}, "PUT", path,
+                                    query={"path": remote}, upload=E.Upload(body, length)))
         failed = r.get("failed") if isinstance(r, dict) else None
         if failed:
             raise OperationFailedError("%d file(s) failed to copy" % len(failed), exit_code=1, argv=["PUT " + path], json=r,
                                        kind="failed", desk=A.check_desk(desk_id))
         return r
 
-    def _get_file(self, desk_id: str, remote: str) -> Tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+    def _get_file(self, desk_id: str, remote: str) -> Tuple[Any, ...]:
         if not isinstance(remote, str) or not remote:
             raise UsageError("a remote path is required", kind="usage")
-        return self.open("GET", self.desk(desk_id) + "/files", query={"path": remote}, accept="application/octet-stream")
+        return E.send(self, E.DeskOp(A.check_desk(desk_id), "file_get", {"path": remote}, "GET", self.desk(desk_id) + "/files",
+                                     query={"path": remote}, accept="application/octet-stream"))
+
+    def _read_sealed_file(self, resp: http.client.HTTPResponse, seal: Any, write: Any) -> Any:
+        return E.read_sealed_file(resp, seal, write, "GET files", lambda e: self._network_error(e, "GET files"))
 
     def download_bytes(self, desk_id: str, remote: str) -> bytes:
         """``GET /desks/{id}/files?path=``: the file's bytes."""
-        conn, resp = self._get_file(desk_id, remote)
+        conn, resp, seal = self._get_file(desk_id, remote)
         try:
+            if seal is not None:
+                buf = bytearray()
+                self._read_sealed_file(resp, seal, buf.extend)
+                return bytes(buf)
             return resp.read()
         except (OSError, http.client.HTTPException) as e:
             raise self._network_error(e, "GET files") from e
@@ -593,7 +350,7 @@ class ApiTransport:
     def download(self, desk_id: str, remote: str, local: str) -> Any:
         """``GET /desks/{id}/files?path=`` into ``local`` (a folder, or a path ending in a separator, keeps the remote name)."""
         started = time.monotonic()
-        conn, resp = self._get_file(desk_id, remote)
+        conn, resp, seal = self._get_file(desk_id, remote)
         dest = os.path.join(local, _basename(remote)) if local.endswith(("/", os.sep)) or os.path.isdir(local) else local
         n = 0
         try:
@@ -602,7 +359,16 @@ class ApiTransport:
             except OSError as e:
                 raise GaiaDeskError("cannot write %s: %s" % (dest, e), kind="local", argv=["download"]) from e
             with f:
-                while True:
+                if seal is not None:
+                    counted = [0]
+
+                    def write(b: bytes) -> None:
+                        f.write(b)
+                        counted[0] += len(b)
+
+                    self._read_sealed_file(resp, seal, write)
+                    n = counted[0]
+                while seal is None:
                     try:
                         chunk = resp.read(1 << 20)
                     except (OSError, http.client.HTTPException) as e:
@@ -634,7 +400,7 @@ class ApiTransport:
             spec["shell"] = A.wire_shell(limits["shell"])
         if limits.get("env") is not None:
             spec["env"] = A.check_env(limits["env"])
-        return self.call("POST", self.desk(desk_id) + "/jobs", json=spec)
+        return self.desk_call(E.DeskOp(A.check_desk(desk_id), "job_start", {"spec": spec}, "POST", self.desk(desk_id) + "/jobs", json=spec))
 
     def wait_job(self, desk_id: str, name: str, timeout: Optional[A.Duration]) -> Any:
         """``GET /desks/{id}/jobs/{name}/wait``: ``{job, timed_out}`` once the job is no longer
@@ -648,7 +414,9 @@ class ApiTransport:
         started = time.monotonic()
         while True:
             left = API_WAIT_MAX if total is None else max(0.0, total - (time.monotonic() - started))
-            r = self.call("GET", path, query={"timeout": min(API_WAIT_MAX, int(-(-left // 1)))})
+            t = min(API_WAIT_MAX, int(-(-left // 1)))
+            r = self.desk_call(E.DeskOp(A.check_desk(desk_id), "job_wait", {"name": name, "timeout_ms": t * 1000}, "GET", path,
+                                        query={"timeout": t}))
             env = error_envelope(r)
             if env is not None:
                 raise error_for_kind(env.kind, env.message or "the wait failed", env.reason, exit_code=desk_op_exit(env.kind),
@@ -660,20 +428,33 @@ class ApiTransport:
                 return r
 
     def jobs(self, desk_id: str) -> Any:
-        return self.call("GET", self.desk(desk_id) + "/jobs")
+        return self.desk_call(E.DeskOp(A.check_desk(desk_id), "job_list", {}, "GET", self.desk(desk_id) + "/jobs"))
 
     def kill_job(self, desk_id: str, name: str) -> Any:
-        return self.call("DELETE", "%s/jobs/%s" % (self.desk(desk_id), quote(name, safe="")))
+        path = "%s/jobs/%s" % (self.desk(desk_id), quote(name, safe=""))
+        return self.desk_call(E.DeskOp(A.check_desk(desk_id), "job_kill", {"name": name}, "DELETE", path))
+
+    @staticmethod
+    def _logs_request(name: str, tail: Optional[int], follow: bool) -> Dict[str, Any]:
+        r: Dict[str, Any] = {"name": name}
+        if tail is not None:
+            r["tail"] = tail
+        if follow:
+            r["follow"] = True
+        return r
 
     def job_logs(self, desk_id: str, name: str, tail: Optional[int]) -> Any:
-        return self.call("GET", "%s/jobs/%s/logs" % (self.desk(desk_id), quote(name, safe="")), query={"tail": tail})
+        path = "%s/jobs/%s/logs" % (self.desk(desk_id), quote(name, safe=""))
+        return self.desk_call(E.DeskOp(A.check_desk(desk_id), "job_logs", self._logs_request(name, tail, False), "GET", path, query={"tail": tail}))
 
     def follow_job_logs(self, desk_id: str, name: str, tail: Optional[int]) -> ApiStream:
         path = "%s/jobs/%s/logs" % (self.desk(desk_id), quote(name, safe=""))
-        return ApiStream("GET " + path, "logs", lambda: self.open("GET", path, query={"follow": 1, "tail": tail}, accept="text/event-stream"), name)
+        op = E.DeskOp(A.check_desk(desk_id), "job_logs", self._logs_request(name, tail, True), "GET", path, query={"follow": 1, "tail": tail},
+                      sealed_query={"follow": 1}, accept="text/event-stream")
+        return ApiStream(op.label, "logs", lambda: self._stream(op, "logs"), name)
 
     def stats(self, desk_id: str) -> Any:
-        return self.call("GET", self.desk(desk_id) + "/stats")
+        return self.desk_call(E.DeskOp(A.check_desk(desk_id), "stats", {}, "GET", self.desk(desk_id) + "/stats"))
 
     def create_token(self, desks: Union[str, Sequence[str]], spec: Mapping[str, Any]) -> Any:
         """``POST /desks/{id}/tokens`` with a MintSpec, once per desk: one MintResult with every desk's token.
@@ -691,7 +472,7 @@ class ApiTransport:
         tokens: List[Any] = []
         for d in [desks] if isinstance(desks, str) else list(desks):
             try:
-                r = self.call("POST", self.desk(d) + "/tokens", json=mint)
+                r = self.desk_call(E.DeskOp(A.check_desk(d), "token_mint", {"spec": mint}, "POST", self.desk(d) + "/tokens", json=mint))
             except GaiaDeskError as e:
                 if tokens:
                     e.json = dict(e.json if isinstance(e.json, dict) else {}, tokens=tokens)
@@ -702,11 +483,12 @@ class ApiTransport:
         return {"tokens": tokens}
 
     def list_tokens(self, desk_id: str) -> Any:
-        return self.call("GET", self.desk(desk_id) + "/tokens")
+        return self.desk_call(E.DeskOp(A.check_desk(desk_id), "token_list", {}, "GET", self.desk(desk_id) + "/tokens"))
 
     def revoke_token(self, desk_id: str, name: Optional[str], all_for_desk: bool, account: bool) -> Any:
         if all_for_desk:
             raise not_over_api("revoke_token(all_for_desk=True)", "revoke each token by id (list_tokens), or use the CLI or native transport")
         if account:
             raise not_over_api("revoke_token(account=True)", "the API revokes on the desk; drop account=")
-        return self.call("DELETE", "%s/tokens/%s" % (self.desk(desk_id), quote(name or "", safe="")))
+        path = "%s/tokens/%s" % (self.desk(desk_id), quote(name or "", safe=""))
+        return self.desk_call(E.DeskOp(A.check_desk(desk_id), "token_revoke", {"token": name or ""}, "DELETE", path))

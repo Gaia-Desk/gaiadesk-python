@@ -109,6 +109,13 @@ class GaiaDesk(Base):
       ``X-GaiaDesk-Desk-Token``. From an API key, desk operations need one.
     * ``base_url``: default ``https://api.gaiadesk.net/v1``.
     * ``wake``: if a desk is asleep, ring it and wait up to this many seconds (0-120).
+    * ``e2e``: end-to-end encryption of desk operations, so the server relays only
+      ciphertext (needs ``pip install "gaiadesk[e2e]"``). ``"auto"`` (default): seal
+      whenever the desk publishes a key, else send in the clear with a warning (or
+      raise, for a desk that requires it); ``"require"``: never send in the clear
+      (``EndToEndError``); ``"off"``: never seal.
+    * ``e2e_keys``: ``{desk_id: e2e_pub}`` to pin desks' keys; a different key from
+      the server is an ``EndToEndError`` and nothing is sent.
 
     The same operations, results and errors, served by a desk itself (``transport=``):
 

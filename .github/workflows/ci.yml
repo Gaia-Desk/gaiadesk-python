@@ -17,8 +17,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      # Installs the package's dependencies too (typing_extensions before 3.11, for gaiadesk.types).
-      - run: python -m pip install .
+      # Installs the package's dependencies too (typing_extensions before 3.11, for gaiadesk.types), and cryptography for the end-to-end tests.
+      - run: python -m pip install ".[e2e]"
       - run: python -m unittest discover -s tests -v
       - name: Import the installed package from outside the source tree
         shell: bash

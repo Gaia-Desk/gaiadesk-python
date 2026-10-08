@@ -5,6 +5,7 @@ sees exactly the data the CLI transport does, as the real API relays the
 desk's answers in the CLI's JSON shapes:
 
     GET    /desks                          devices --json
+    GET    /desks/{id}                     the desk (online, no end-to-end key)
     POST   /desks/{id}/exec[?stream=1]     exec --json | --json-stream (as SSE)
     POST   /desks/{id}/jobs                run --detach --json            201
     GET    /desks/{id}/jobs                ps --json
@@ -234,6 +235,9 @@ class Handler(BaseHTTPRequestHandler):
         if desk == LIMITED_DESK:
             return self.send_error_env({"kind": "refused", "reason": "rate_limited", "message": "Too many requests for this key; try again in 7 s."},
                                        {"Retry-After": "7"})
+        if rest == "" and rec["method"] == "GET":
+            # One desk: these publish no end-to-end key (mock_e2e_api's do).
+            return self.send_json(200, {"desk_id": desk, "online": True, "features": ["desk_op"]})
         tokens = rest.startswith("/tokens")
         if tokens and is_key:
             return self.send_error_env({"kind": "refused", "reason": "session_required", "desk": desk,
@@ -405,8 +409,8 @@ class Handler(BaseHTTPRequestHandler):
 class MockApi:
     """``url`` (``http://127.0.0.1:<port>/v1``), ``requests`` (each one recorded), ``close()``."""
 
-    def __init__(self):
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    def __init__(self, handler=Handler):
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.server.daemon_threads = True
         self.server.requests = []
         self.requests = self.server.requests
