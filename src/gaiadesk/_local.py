@@ -173,10 +173,12 @@ class PipeSocket:
         self._expired = False
         self._closed = False
         self._watchdog: Optional[threading.Thread] = None
+        self._io_thread: Optional[int] = None  # the native id of the thread in a read or write
 
     def _timed(self, io_call: Any, arg: Any) -> Any:
         """``io_call(arg)``, cancelled after the timeout (``socket.timeout``)."""
         t = self._timeout
+        self._io_thread = threading.get_native_id()
         if t is None:
             return io_call(arg)
         with self._cv:
@@ -212,12 +214,27 @@ class PipeSocket:
                 self._cancel()
 
     def _cancel(self) -> None:
-        """Stop the pipe's I/O blocked on another thread (Windows: ``CancelIoEx``)."""
+        """Stop the pipe's I/O blocked on another thread: on Windows ``CancelIoEx`` on the pipe,
+        and ``CancelSynchronousIo`` on the thread in a read or write (the pipe is opened for
+        synchronous I/O, which CancelIoEx alone may not end)."""
         try:
             import ctypes
             import msvcrt
 
-            ctypes.windll.kernel32.CancelIoEx(msvcrt.get_osfhandle(self._f.fileno()), None)  # type: ignore[attr-defined]
+            # Its own instance of kernel32, so the argtypes set here change nothing for anyone else.
+            k = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+            k.CancelIoEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            k.CancelIoEx(msvcrt.get_osfhandle(self._f.fileno()), None)  # type: ignore[attr-defined]
+            tid = self._io_thread
+            if tid is not None:
+                k.OpenThread.restype = ctypes.c_void_p
+                k.OpenThread.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+                k.CancelSynchronousIo.argtypes = [ctypes.c_void_p]
+                k.CloseHandle.argtypes = [ctypes.c_void_p]
+                h = k.OpenThread(0x0001, 0, tid)  # THREAD_TERMINATE: the right CancelSynchronousIo needs
+                if h:
+                    k.CancelSynchronousIo(h)
+                    k.CloseHandle(h)
         except Exception:  # noqa: BLE001 (best effort)
             pass
 

@@ -77,9 +77,16 @@ class NeverEstablished(Case):
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
         probe.close()
-        e, took = self.fails(UnreachableError, gd("http://127.0.0.1:%d/v1" % port, retries=0).exec, D, "deploy")
+        url = "http://127.0.0.1:%d/v1" % port
+        e, once = self.fails(UnreachableError, gd(url, retries=0).exec, D, "deploy")
         self.assertEqual(e.kind, "network")
-        self.assertLess(took, 1)
+        # One refused connect is instant, except on Windows, which tries for about 2 s before
+        # it reports a refusal: then the retried call must take about three times as long.
+        if os.name == "nt":
+            _, thrice = self.fails(UnreachableError, gd(url, retries=2).exec, D, "deploy")
+            self.assertGreater(thrice, once * 2)
+        else:
+            self.assertLess(once, 1)
 
     @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets here")
     def test_a_local_socket_that_is_not_there_yet(self):
@@ -97,6 +104,10 @@ class NeverEstablished(Case):
             buf = b""
             while b"\r\n\r\n" not in buf:
                 buf += c.recv(65536)
+            head, _, body = buf.partition(b"\r\n\r\n")
+            length = int(next(line.split(b":")[1] for line in head.split(b"\r\n") if line.lower().startswith(b"content-length:")))
+            while len(body) < length:  # http.client sends the body after the head: read it before answering
+                body += c.recv(65536)
             posts.append(buf.split(b" ", 1)[0])
             body = b'{"exit":0,"stdout":"","stderr":""}'
             c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(body) + body)

@@ -20,6 +20,10 @@ import signal
 import sys
 import time
 
+# gaiadesk-cli writes \n line ends on every platform (Python's text streams would write \r\n on Windows).
+for _s in (sys.stdout, sys.stderr):
+    _s.reconfigure(newline="\n")  # type: ignore[attr-defined]
+
 argv = sys.argv[1:]
 OK, OFFLINE, REFUSED, USAGE, PLAIN = "123456789", "234567890", "345678901", "desk-usage", "desk-plain"
 DESKS = (OK, OFFLINE, REFUSED, USAGE, PLAIN)

@@ -14,6 +14,7 @@ a half-open socket, a stalled proxy) is a typed error, never a hang.
 
 from __future__ import annotations
 
+import os
 import socket
 import threading
 from typing import Any, List, Optional, Tuple
@@ -42,6 +43,20 @@ def check(response_timeout: Any, idle_timeout: Any) -> Tuple[Optional[float], Op
 def is_timeout(e: BaseException) -> bool:
     """A socket (or pipe) read or write that ran out of time."""
     return isinstance(e, socket.timeout)
+
+
+def abort(sock: Any) -> None:
+    """End I/O blocked on ``sock`` in another thread: shut it down, and on Windows (where a
+    shutdown does not wake a blocked receive) close its handle as well."""
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    if os.name == "nt" and isinstance(sock, socket.socket):
+        try:
+            socket.close(sock.detach())  # type: ignore[attr-defined]
+        except OSError:
+            pass
 
 
 def _secs(t: Optional[float]) -> str:
@@ -81,10 +96,7 @@ class ResponseWatch:
             self.fired = True
         sock = getattr(self._conn, "sock", None)
         if sock is not None:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+            abort(sock)
 
     def check(self) -> None:
         """Raise ``socket.timeout`` if the time ran out (the connection may have survived it)."""

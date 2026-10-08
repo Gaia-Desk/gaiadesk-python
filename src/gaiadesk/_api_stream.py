@@ -12,11 +12,11 @@ import http.client
 import json as _json
 import queue
 import re
-import socket
 import threading
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple, Union
 
 from . import _retry as R
+from ._timeouts import abort
 from .errors import KINDS, GaiaDeskError, UnreachableError, UsageError, error_class, error_envelope
 from .stream import Chunk, Exit
 
@@ -157,6 +157,7 @@ class ApiStream:
         self._killed = False
         self._stop = threading.Event()  # ends a retry's backoff wait at once
         self._conn: Optional[http.client.HTTPConnection] = None
+        self._sock: Any = None
         self._mapper: Any = None
         self._resp: Optional[http.client.HTTPResponse] = None
         self._exit = Exit(None, "")
@@ -165,6 +166,7 @@ class ApiStream:
 
     def _connecting(self, conn: Any) -> None:
         self._conn = conn
+        self._sock = conn.sock  # kept: http.client hands it to a response that will close
         if self._killed:
             self.kill()
 
@@ -313,12 +315,9 @@ class ApiStream:
         self._killed = True
         self._stop.set()
         conn = self._conn
-        sock = getattr(conn, "sock", None) if conn is not None else None
+        sock = self._sock or (getattr(conn, "sock", None) if conn is not None else None)
         if sock is not None:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+            abort(sock)
 
     def wait(self, timeout: Optional[float] = None) -> Exit:
         self._thread.join(timeout)

@@ -328,10 +328,10 @@ class LocalSocket(RawServerCase):
 
 
 class Pipe(unittest.TestCase):
-    """A named pipe has no socket timeout: PipeSocket's watchdog cancels a read that blocks too long
-    (on Windows with CancelIoEx; here a socket pair stands in for the pipe, closed to cancel)."""
+    """A named pipe has no socket timeout: PipeSocket's watchdog cancels a read that blocks too long."""
 
     def test_a_blocked_read_times_out(self):
+        # A socket pair stands in for the pipe; its peer is closed to cancel.
         a, b = socket.socketpair()
         self.addCleanup(a.close)
         self.addCleanup(b.close)
@@ -339,12 +339,41 @@ class Pipe(unittest.TestCase):
 
         class Stand(PipeSocket):
             def _cancel(self):
-                a.shutdown(socket.SHUT_RDWR)
+                b.close()
 
         p = Stand(f)
         self.addCleanup(p.close)
         r = p.makefile()
         b.sendall(b"hello")
+        p.settimeout(0.5)
+        self.assertEqual(r.read1(16), b"hello")
+        _, e, took = bounded(r.read1, 16)
+        self.assertIsInstance(e, socket.timeout)
+        self.assertLess(took, 3)
+
+    @unittest.skipUnless(os.name == "nt", "a Windows named pipe")
+    def test_a_blocked_read_of_a_real_named_pipe_times_out(self):
+        import ctypes
+        import uuid
+
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.CreateNamedPipeW.restype = ctypes.c_void_p
+        k.CreateNamedPipeW.argtypes = [ctypes.c_wchar_p] + [ctypes.c_uint32] * 6 + [ctypes.c_void_p]
+        k.ConnectNamedPipe.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        k.WriteFile.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+        k.CloseHandle.argtypes = [ctypes.c_void_p]
+        name = "\\\\.\\pipe\\gaiadesk-test-" + uuid.uuid4().hex
+        # PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_WAIT, one instance.
+        h = k.CreateNamedPipeW(name, 3, 0, 1, 65536, 65536, 0, None)
+        self.assertNotIn(h, (None, ctypes.c_void_p(-1).value), "CreateNamedPipeW failed: %d" % ctypes.get_last_error())
+        self.addCleanup(k.CloseHandle, h)
+        f = open(name, "r+b", buffering=0)
+        k.ConnectNamedPipe(h, None)  # the client is in already (ERROR_PIPE_CONNECTED)
+        n = ctypes.c_uint32(0)
+        self.assertTrue(k.WriteFile(h, b"hello", 5, ctypes.byref(n), None))
+        p = PipeSocket(f)
+        self.addCleanup(p.close)
+        r = p.makefile()
         p.settimeout(0.5)
         self.assertEqual(r.read1(16), b"hello")
         _, e, took = bounded(r.read1, 16)

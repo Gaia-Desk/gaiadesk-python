@@ -68,8 +68,10 @@ class _Quiet:
         """A client that hung up (a pinned-certificate mismatch closes right after the handshake) is no failure here."""
 
 
-class _UnixServer(_Quiet, socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = True
+if hasattr(socketserver, "UnixStreamServer"):  # not on Windows, where the local transport is a named pipe
+
+    class _UnixServer(_Quiet, socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+        daemon_threads = True
 
 
 class _TlsServer(_Quiet, ThreadingHTTPServer):
