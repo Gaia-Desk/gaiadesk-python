@@ -34,6 +34,7 @@ from ._local import (
     pipe_user,
 )
 from .errors import (
+    ADMIN_NOT_VIA_API,
     CliNotFoundError,
     CommandError,
     ConnectionLostError,
@@ -50,7 +51,7 @@ from .errors import (
 from .mcp import MCP_PROTOCOL_VERSION, AsyncMcpClient, McpClient, tool_image, tool_text
 from .stream import AsyncCliStream, AsyncJsonExecStream, Chunk, CliStream, Exit, JsonExecStream
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "GaiaDesk",
@@ -89,6 +90,7 @@ __all__ = [
     "tool_text",
     "tool_image",
     "error_envelope",
+    "ADMIN_NOT_VIA_API",
     "locate_cli",
     "GaiaDeskError",
     "CliNotFoundError",

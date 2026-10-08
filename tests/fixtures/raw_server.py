@@ -38,7 +38,7 @@ def status(code, retry_after=None, reason=None, keep_alive=False):
 
 
 def _status_answer(code, retry_after, reason, keep_alive):
-    kind = {429: "refused", 409: "refused"}.get(code, "unreachable")
+    kind = "refused" if code in (401, 403, 409, 429) else "unreachable"
     env = {"error": {"kind": kind, "reason": reason or "", "message": "HTTP %d" % code, "request_id": "req_t"}}
     import json
     body = json.dumps(env).encode()

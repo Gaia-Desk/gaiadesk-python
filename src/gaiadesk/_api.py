@@ -34,6 +34,7 @@ from . import _timeouts as T
 from ._api_stream import ApiStream, AsyncApiStream, SseEvent, SseParser, connecting, desk_op_exit, network_error  # noqa: F401 (re-exported)
 from ._native_args import mem_mb
 from .errors import (
+    ADMIN_NOT_VIA_API,
     GaiaDeskError,
     OperationFailedError,
     ProtocolError,
@@ -550,6 +551,10 @@ class ApiTransport:
             raise not_over_api("create_token(out=...)", "the API returns the secret; write it to a file yourself, or use the CLI or native transport")
         if not spec.get("name"):
             raise UsageError("create_token needs a name over the API transport", kind="usage")
+        if spec.get("scopes") and "admin" in list(spec["scopes"]):
+            raise UsageError("a token with the admin scope cannot be minted over the API (the API refuses it with %s): "
+                             "administrator work runs only through gaiadesk-cli exec --admin (mint it with the CLI or native "
+                             "transport)" % ADMIN_NOT_VIA_API, kind="usage", reason=ADMIN_NOT_VIA_API, argv=["create_token"])
         mint: Dict[str, Any] = {"name": spec["name"], "expires_secs": seconds(spec.get("expires") or "7d", "expires"),
                                 "scopes": list(spec["scopes"]) if spec.get("scopes") else ["exec", "cp", "jobs"]}
         if spec.get("cwd") is not None:

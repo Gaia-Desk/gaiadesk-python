@@ -170,6 +170,11 @@ What it serves, with the same results and errors as the CLI transport:
 - `timeout=` becomes `timeout_secs`; `connect_timeout`, `persist` and
   `verbose` do not apply. `create_token` needs a `name` over the API (and
   defaults `expires` to 7 days, `scopes` to exec, cp, jobs).
+- Administrator work (root / SYSTEM) is only available through
+  `gaiadesk-cli exec --admin` (or this SDK's CLI transport), not the API —
+  the API refuses it with `admin_not_via_api` (`RefusedError`; the SDK
+  refuses `create_token(scopes=[..., "admin"])` on the `api`, `local` and
+  `lan` transports itself, with a `UsageError`).
 
 **Timeouts** (`response_timeout=` and `idle_timeout=`, in seconds, on the
 `api`, `local` and `lan` transports; `None` is no limit) make a server or

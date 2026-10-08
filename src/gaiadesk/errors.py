@@ -125,6 +125,12 @@ class McpError(GaiaDeskError):
         self.data = data
 
 
+ADMIN_NOT_VIA_API = "admin_not_via_api"
+"""The reason (kind ``refused``) the hosted API and a desk's local and LAN APIs give for
+administrator work: an exec asking to run as administrator (an ExecResult with exit 254 and
+this ``error``) or minting a token with the ``admin`` scope (403). Administrator work runs
+only through ``gaiadesk-cli exec --admin``."""
+
 KINDS = ("usage", "refused", "unreachable", "connection_lost", "failed", "protocol")
 """The six kinds of the CLI's error envelope."""
 

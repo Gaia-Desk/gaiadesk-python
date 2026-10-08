@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.2
+
+- **Administrator work is not available over any API.** The hosted API and
+  a desk's local and LAN APIs refuse it with reason `admin_not_via_api`
+  (kind `refused`): an exec asking to run as administrator is answered exit
+  254 with that error, and minting a token with the `admin` scope is a 403.
+  This SDK never had an `admin` exec option; `create_token(scopes=[...,
+  "admin"])` on the `api`, `local` and `lan` transports is now a
+  `UsageError` (reason `admin_not_via_api`) raised before anything is sent
+  — breaking for code that minted admin tokens through the API, which now
+  refuses them anyway. Administrator work runs only through `gaiadesk-cli
+  exec --admin`; the CLI transport still mints `admin`-scoped tokens. New
+  constant `ADMIN_NOT_VIA_API`; both refusals surface as `RefusedError`
+  with that reason.
+- Windows: `response_timeout` now ends the wait at its limit (a socket
+  shutdown does not wake a blocked receive there; the SDK also closes the
+  socket's handle, where it used to wait for a 5-second backstop), and
+  `kill()` stops a stream still waiting for its answer. The local
+  transport's named pipe also cancels a blocked synchronous read
+  (`CancelSynchronousIo`), so `idle_timeout` holds there.
+- Tests: Windows fixes (no Unix socket server, `\n` line ends from the fake
+  CLI, refused-connect timing), a flaky local-socket test, and a real
+  named-pipe timeout test.
+
 ## 0.1.1
 
 - **Never hangs on a dropped or stalled connection** (`api`, `local` and
