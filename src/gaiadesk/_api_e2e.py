@@ -214,13 +214,15 @@ def input_body(seal: _e2e.Seal, upload: Upload) -> Iterator[bytes]:
 def _open_sealed(t: "ApiTransport", op: DeskOp, key: bytes) -> Tuple[Any, Any, _e2e.Seal]:
     seal = _e2e.seal_request(key, op.desk, op.name, op.request)
     if op.method == "POST":
-        conn, resp = t.open(op.method, op.path, query=op.sealed_query, json={"e2e": seal.envelope}, accept=op.accept, seal=seal)
+        conn, resp = t.open(op.method, op.path, query=op.sealed_query, json={"e2e": seal.envelope}, accept=op.accept, seal=seal,
+                            retry=False)
     elif op.upload is not None:
         conn, resp = t.open(op.method, op.path, query=op.sealed_query, headers={_e2e.HEADER: seal.header()},
                             body=input_body(seal, op.upload), length=_e2e.input_frames_length(op.upload.size),
-                            content_type=_e2e.FRAMES_CONTENT_TYPE, accept=op.accept, seal=seal)
+                            content_type=_e2e.FRAMES_CONTENT_TYPE, accept=op.accept, seal=seal, retry=False)
     else:
-        conn, resp = t.open(op.method, op.path, query=op.sealed_query, headers={_e2e.HEADER: seal.header()}, accept=op.accept, seal=seal)
+        conn, resp = t.open(op.method, op.path, query=op.sealed_query, headers={_e2e.HEADER: seal.header()}, accept=op.accept, seal=seal,
+                            retry=False)
     return conn, resp, seal
 
 
@@ -250,7 +252,9 @@ def send(t: "ApiTransport", op: DeskOp) -> Tuple[Any, Any, Optional[_e2e.Seal]]:
             key = e.key_for(op.desk, refresh=True, must=True)
     for attempt in (0, 1):
         try:
-            return _open_sealed(t, op, key)  # type: ignore[arg-type]
+            # The transport's retries, each attempt sealed afresh (a fresh key pair and nonces).
+            return t.retry.run(op.method, lambda: _open_sealed(t, op, key),  # type: ignore[arg-type]
+                               op.upload.rewind if op.upload is not None else None)
         except GaiaDeskError as err:
             if attempt or err.reason != "e2e_decrypt_failed" or (op.upload is not None and not op.upload.rewind()):
                 raise

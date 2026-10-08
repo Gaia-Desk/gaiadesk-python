@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -210,14 +211,18 @@ class Errors(unittest.TestCase):
         self.assertEqual((cm.exception.status, cm.exception.kind), (504, "timeout"))
 
     def test_rate_limit_html_and_network(self):
+        before = len(API.requests)
+        started = time.monotonic()
         with self.assertRaises(RefusedError) as cm:
-            api().stats(LIMITED_DESK)
+            api(max_retry_wait=5, e2e="off").stats(LIMITED_DESK)  # a Retry-After past max_retry_wait is not waited for
         self.assertEqual((cm.exception.status, cm.exception.reason, cm.exception.retry_after), (429, "rate_limited", 7))
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(len(API.requests) - before, 1)
         with self.assertRaises(ProtocolError) as cm:
             api().stats(HTML_DESK)
         self.assertEqual((cm.exception.kind, cm.exception.status), ("protocol", 500))
         self.assertIn("no error envelope", str(cm.exception))
-        down = GaiaDesk(api_key="ak_test", base_url="http://127.0.0.1:1/v1")
+        down = GaiaDesk(api_key="ak_test", base_url="http://127.0.0.1:1/v1", retry_base_delay=0.005)
         with self.assertRaises(UnreachableError) as cm:
             down.stats(OK)
         self.assertEqual((cm.exception.kind, cm.exception.reason, cm.exception.exit_code), ("network", "network", 255))

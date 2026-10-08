@@ -16,10 +16,30 @@
   positive is a `UsageError`. New `DEFAULT_RESPONSE_TIMEOUT` /
   `DEFAULT_IDLE_TIMEOUT`. Proven on a raw-socket server: closed or reset
   before any response byte (an `UnreachableError`, kind `network`, at once;
-  every request, an upload or `exec` included, reaches the server exactly
-  once), stalled mid-body, mid-JSON, mid-stream (plain and sealed), and
+  an upload or `exec` reaches the server exactly once), stalled mid-body,
+  mid-JSON, mid-stream (plain and sealed), and
   silent; 300 dropped requests in a row never hang. On Windows' named pipe
   (`local`) a watchdog cancels a read or write that blocks too long.
+- **Retries** (`api`, `local` and `lan` transports; there were none
+  before, apart from the two end-to-end retries, which stay). A request is
+  now sent again only when that cannot run anything twice: a connection
+  never made (DNS, refused, TLS handshake, a local socket or pipe not there
+  yet) for any method; a connection lost after sending, or a 502, 503 or
+  504 answer, for GETs only (not a 503 saying the API or desk operations
+  are switched off); a 429 (`rate_limited`, `desk_busy`) or 409
+  `idempotency_key_in_flight` for any method. Never a timeout, never once
+  an answer has begun, never a POST/PUT/DELETE that may have reached the
+  server (an `Idempotency-Key` does not change that). 429 and 503 wait for
+  `Retry-After`, unless it is longer than `max_retry_wait=` (60 s): then
+  the error is raised at once, carrying it; otherwise backoff from
+  `retry_base_delay=` (0.25 s) doubling up to `retry_max_delay=` (8 s),
+  times a random 0.5–1.0. `max_retries=` (2: three attempts in all; 0:
+  off). A sealed operation is sealed afresh for each attempt; `kill()`
+  ends a stream's retry wait at once. So a GET that lost its connection,
+  hit a 502/503/504 or was rate limited, and any call refused with 429,
+  now succeeds on a later attempt where it used to fail at once. New
+  `DEFAULT_MAX_RETRIES`, `DEFAULT_RETRY_BASE_DELAY`,
+  `DEFAULT_RETRY_MAX_DELAY`, `DEFAULT_MAX_RETRY_WAIT`.
 - A `download` that fails part-way leaves no partial file (it is written
   beside the destination and renamed into place when complete; an existing
   file is left as it was).

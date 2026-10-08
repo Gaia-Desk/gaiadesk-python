@@ -24,6 +24,29 @@ STALL_MID_EVENTS = "stall_mid_events"
 """Send 200 text/event-stream headers and one stdout event, then nothing, the socket open."""
 SILENT = "silent"
 """Read the request and never answer."""
+KEEP_ALIVE_THEN_CLOSE = "keep_alive_then_close"
+"""Answer the first request on a connection 200 (keep-alive), then close on the next one without answering it."""
+OK = "ok"
+"""Answer 200 with a small JSON result (an ExecResult and a CopyResult in one), then close."""
+
+_OK_BODY = b'{"exit":0,"stdout":"","stderr":"","files":1,"dirs":0,"bytes":0,"failed":[]}'
+
+
+def status(code, retry_after=None, reason=None, keep_alive=False):
+    """A mode: answer every request with this status and the API's error envelope."""
+    return ("status", code, retry_after, reason, keep_alive)
+
+
+def _status_answer(code, retry_after, reason, keep_alive):
+    kind = {429: "refused", 409: "refused"}.get(code, "unreachable")
+    env = {"error": {"kind": kind, "reason": reason or "", "message": "HTTP %d" % code, "request_id": "req_t"}}
+    import json
+    body = json.dumps(env).encode()
+    head = "HTTP/1.1 %d X\r\nContent-Type: application/json\r\nContent-Length: %d\r\n" % (code, len(body))
+    if retry_after is not None:
+        head += "Retry-After: %s\r\n" % retry_after
+    head += "Connection: %s\r\n\r\n" % ("keep-alive" if keep_alive else "close")
+    return head.encode() + body
 
 _EVENT = b'event: stdout\ndata: {"event":"stdout","data":"hi"}\n\n'
 _ANSWERS = {
@@ -39,20 +62,27 @@ class RawServer:
     are sent as the answer, then nothing, the socket held open.
     ``count(method)``: the requests received with that method."""
 
-    def __init__(self, mode=CLOSE_BEFORE_RESPONSE):
+    def __init__(self, mode=CLOSE_BEFORE_RESPONSE, port=0):
         self.mode = mode
         self._counts = Counter()
+        self.heads = []
+        """Every request's head (request line and header fields), in order."""
         self._lock = threading.Lock()
         self._held = []
         self._stopped = False
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._listener.bind(("127.0.0.1", 0))
+        self._listener.bind(("127.0.0.1", port))
         self._listener.listen(128)
         self._listener.settimeout(0.1)  # the accept loop sees close() promptly
         self.url = "http://127.0.0.1:%d/v1" % self._listener.getsockname()[1]
         self._accept = threading.Thread(target=self._accept_loop, daemon=True)
         self._accept.start()
+
+    def _count(self, head):
+        with self._lock:
+            self._counts[head.split(" ", 1)[0]] += 1
+            self.heads.append(head)
 
     def count(self, method):
         with self._lock:
@@ -105,9 +135,34 @@ class RawServer:
             if head is None:
                 c.close()
                 return
-            with self._lock:
-                self._counts[head.split(" ", 1)[0]] += 1
+            self._count(head)
             mode = self.mode
+            if isinstance(mode, tuple) and mode[0] == "status":
+                self._read_body(c, head, rest)
+                c.sendall(_status_answer(*mode[1:]))
+                while mode[4]:  # keep-alive: the same answer to every request on the connection
+                    head, rest = self._read_head(c)
+                    if head is None:
+                        break
+                    self._count(head)
+                    self._read_body(c, head, rest)
+                    c.sendall(_status_answer(*mode[1:]))
+                c.close()
+                return
+            if mode == OK:
+                self._read_body(c, head, rest)
+                c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n"
+                          % len(_OK_BODY) + _OK_BODY)
+                c.close()
+                return
+            if mode == KEEP_ALIVE_THEN_CLOSE:
+                self._read_body(c, head, rest)
+                c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: keep-alive\r\n\r\n{\"jobs\":[]}")
+                head, rest = self._read_head(c)
+                if head is not None:
+                    self._count(head)
+                c.close()
+                return
             if mode == CLOSE_BEFORE_RESPONSE:
                 c.close()
                 return

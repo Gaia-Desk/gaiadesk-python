@@ -1,8 +1,9 @@
 """A server or proxy that drops or stalls a connection, on a raw socket (no
 HTTP framework): the API transport fails with a clear, typed error within its
-timeouts and never hangs, and never sends a request twice. (The SDK has no
-retry policy of its own for lost connections, and http.client never re-sends,
-so every request reaches the server exactly once.)"""
+timeouts and never hangs; a lost connection is retried for GETs only, and
+http.client itself never re-sends, so a GET reaches the server once per
+attempt and anything that changes something exactly once. (The retry policy's
+other cases are in test_retry.py.)"""
 
 import asyncio
 import os
@@ -35,8 +36,9 @@ BOUND = 10.0  # a hang shows as a failure after this long, not as a stuck run
 BIG = b"\0" * (4 * 1024 * 1024)
 
 
-def gd(server, idle=1.0, response=30.0, cls=GaiaDesk):
-    return cls(api_key="ak_t", desk_token="gdagt_t", base_url=server.url, e2e="off", idle_timeout=idle, response_timeout=response)
+def gd(server, idle=1.0, response=30.0, cls=GaiaDesk, retries=2):
+    return cls(api_key="ak_t", desk_token="gdagt_t", base_url=server.url, e2e="off", idle_timeout=idle, response_timeout=response,
+               max_retries=retries, retry_base_delay=0.005)
 
 
 def bounded(fn, *args):
@@ -72,18 +74,20 @@ class RawServerCase(unittest.TestCase):
 
 
 class DroppedBeforeAnyResponseByte(RawServerCase):
-    def test_a_read_fails_unreachable_network_and_is_sent_once(self):
+    def test_a_read_is_retried_then_fails_unreachable_network(self):
         for mode in (rs.CLOSE_BEFORE_RESPONSE, rs.RESET_BEFORE_RESPONSE):
             with self.subTest(mode=mode):
                 s = self.server(mode)
                 g = gd(s)
                 e, _ = self.fails(UnreachableError, g.download_bytes, D, "/tmp/x")
                 self.assertEqual((e.kind, e.reason, e.exit_code), ("network", "network", 255))
-                self.assertEqual(s.count("GET"), 1)
+                self.assertEqual(s.count("GET"), 3)  # the first try and two retries: a GET is safe to send again
                 e, _ = self.fails(UnreachableError, g.stats, D)
                 self.assertEqual(e.kind, "network")
                 self.assertEqual(e.argv, ["GET /desks/123456789/stats"])
-                self.assertEqual(s.count("GET"), 2)
+                self.assertEqual(s.count("GET"), 6)
+                self.fails(UnreachableError, gd(s, retries=0).stats, D)
+                self.assertEqual(s.count("GET"), 7)
 
     def test_a_large_upload_an_exec_or_a_job_is_never_sent_twice(self):
         for mode in (rs.CLOSE_BEFORE_RESPONSE, rs.RESET_BEFORE_RESPONSE, rs.CLOSE_AFTER_BODY):
@@ -223,7 +227,7 @@ class Silent(RawServerCase):
 class Stress(RawServerCase):
     def test_300_dropped_requests_never_hang(self):
         s = self.server(rs.CLOSE_BEFORE_RESPONSE)
-        g = gd(s)
+        g = gd(s, retries=1)
         up = b"\0" * (512 * 1024)
         modes = (rs.CLOSE_BEFORE_RESPONSE, rs.RESET_BEFORE_RESPONSE, rs.CLOSE_AFTER_BODY)
         for i in range(300):
@@ -235,7 +239,7 @@ class Stress(RawServerCase):
             self.assertIsInstance(e, UnreachableError, "iteration %d (%s)" % (i, s.mode))
             self.assertEqual(e.kind, "network", "iteration %d (%s): %s" % (i, s.mode, e))
         self.assertEqual(s.count("PUT"), 150)  # every upload sent exactly once
-        self.assertEqual(s.count("GET"), 150)  # and every read: no retry policy, and http.client never re-sends
+        self.assertEqual(s.count("GET"), 300)  # every read tried twice (http.client never re-sends on its own)
 
 
 class Options(unittest.TestCase):

@@ -16,6 +16,7 @@ import socket
 import threading
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple, Union
 
+from . import _retry as R
 from .errors import KINDS, GaiaDeskError, UnreachableError, UsageError, error_class, error_envelope
 from .stream import Chunk, Exit
 
@@ -154,6 +155,7 @@ class ApiStream:
         self._q: "queue.Queue[Optional[Chunk]]" = queue.Queue()
         self._drained = False
         self._killed = False
+        self._stop = threading.Event()  # ends a retry's backoff wait at once
         self._conn: Optional[http.client.HTTPConnection] = None
         self._mapper: Any = None
         self._resp: Optional[http.client.HTTPResponse] = None
@@ -170,10 +172,12 @@ class ApiStream:
         try:
             # (connection, response) or, for a sealed stream, (…, its EventMapper).
             _CONNECTING.hook = self._connecting
+            R.STOP.event = self._stop
             try:
                 started = start()
             finally:
                 _CONNECTING.hook = None
+                R.STOP.event = None
             self._conn, resp = started[0], started[1]
             self._resp = resp
             self._mapper = started[2] if len(started) > 2 else None
@@ -307,6 +311,7 @@ class ApiStream:
     def kill(self) -> None:
         """Stop: closes the request (the server stops the command, or stops following the job)."""
         self._killed = True
+        self._stop.set()
         conn = self._conn
         sock = getattr(conn, "sock", None) if conn is not None else None
         if sock is not None:

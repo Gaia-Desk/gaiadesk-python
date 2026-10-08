@@ -187,12 +187,28 @@ proxy that stops answering an error, never a hang:
   `result` is an `error` event, kind `connection_lost`, reason `timeout`,
   exit 255). A `download` that fails part-way leaves no partial file.
 - A connection closed or reset before any answer is an `UnreachableError`
-  (kind `network`) at once. Nothing is sent twice: the SDK does not retry a
-  lost connection, a timeout or an HTTP failure (only the two end-to-end
-  retries below), and Python's `http.client` never re-sends a request itself
-  (each request has a connection of its own, none pooled), so `exec`,
-  uploads, jobs and tokens reach the desk at most once.
-- `kill()` on a stream stops it at any point, before its answer has begun too.
+  (kind `network`) at once, retried only as below.
+- `kill()` on a stream stops it at any point, before its answer has begun
+  too, and during a retry's wait.
+
+**Retries.** A request is sent again only when that cannot run anything twice:
+
+- **The connection was never made** (DNS, refused, TLS handshake): any method — nothing was sent.
+- **The connection was lost after sending, or the answer was 502, 503 or 504**: GETs only (reads).
+  A 503 that says the API or desk operations are switched off is not retried.
+- **429** (`rate_limited`, `desk_busy`) and **409** `idempotency_key_in_flight`: any method — the server refused
+  it before acting.
+
+Timeouts are never retried, and nothing is retried once its answer has begun. A call that changes something
+(POST, PUT, DELETE) is never sent again after it may have reached the server; an `Idempotency-Key` is sent but
+does not make a call retryable. 429 and 503 wait for `Retry-After`; one longer than `max_retry_wait=`
+(default 60 s) is not waited for — the error carries it. Otherwise the wait is exponential backoff with jitter:
+`retry_base_delay=` (default 250 ms) doubling up to `retry_max_delay=` (default 8 s), times a random 0.5–1.0.
+`max_retries=` (default 2, so 3 attempts in all) sets how many times; 0 turns retries off. Each retry of
+a sealed operation is sealed afresh.
+
+Python's `http.client` never re-sends a request by itself (and each request has a connection of its own, none
+pooled), so nothing — not even a GET — is sent again except by the rule above.
 
 **Not available over the API** (a `UsageError`, kind `usage`, saying "not
 available over the API transport; use the CLI or native transport"):

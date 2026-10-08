@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from . import _retry as R
 from . import _timeouts as T
 from ._api import ApiTransport, check_desk_token
 from .errors import GaiaDeskError, UnreachableError, UsageError
@@ -311,7 +312,7 @@ class LocalTransport(ApiTransport):
 
     def __init__(self, desk_token: Optional[str] = None, token: Optional[str] = None, socket_path: Optional[str] = None,
                  environ: Optional[Mapping[str, str]] = None, response_timeout: Optional[float] = T.DEFAULT_RESPONSE_TIMEOUT,
-                 idle_timeout: Optional[float] = T.DEFAULT_IDLE_TIMEOUT) -> None:
+                 idle_timeout: Optional[float] = T.DEFAULT_IDLE_TIMEOUT, retry: Optional[R.RetryPolicy] = None) -> None:
         self._desk_token = check_desk_token(desk_token)
         if token is not None and (not isinstance(token, str) or not token.strip()):
             raise UsageError("token must be a non-empty string (the desk's local admin token, gdlocal_…)", kind="usage")
@@ -328,6 +329,7 @@ class LocalTransport(ApiTransport):
         self._wake = None
         self.where = "GaiaDesk's local API (%s)" % self.address
         self.set_timeouts(response_timeout, idle_timeout)
+        self.retry = retry or R.RetryPolicy()
 
     def admin_token(self) -> str:
         """The desk's local admin token: ``token=``, else the ``api-token`` file (read on every request: it changes when the app does)."""
@@ -373,7 +375,8 @@ class LanTransport(ApiTransport):
     transport = "lan"
 
     def __init__(self, base_url: str, fingerprint: str, desk_token: Optional[str],
-                 response_timeout: Optional[float] = T.DEFAULT_RESPONSE_TIMEOUT, idle_timeout: Optional[float] = T.DEFAULT_IDLE_TIMEOUT) -> None:
+                 response_timeout: Optional[float] = T.DEFAULT_RESPONSE_TIMEOUT, idle_timeout: Optional[float] = T.DEFAULT_IDLE_TIMEOUT,
+                 retry: Optional[R.RetryPolicy] = None) -> None:
         if not isinstance(base_url, str) or not base_url:
             raise UsageError("the lan transport needs base_url (https://<desk>:7443/v1, from the desk's Settings)", kind="usage")
         self._set_base(base_url, ("https",), "the lan transport's base_url must be an https:// URL: %r" % (base_url,))
@@ -387,6 +390,7 @@ class LanTransport(ApiTransport):
         self._wake = None
         self.where = "the desk's LAN gateway (%s)" % self.base_url
         self.set_timeouts(response_timeout, idle_timeout)
+        self.retry = retry or R.RetryPolicy()
 
     def headers(self) -> Dict[str, str]:
         """The agent token as ``X-GaiaDesk-Desk-Token``; no Authorization."""

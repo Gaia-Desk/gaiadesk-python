@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Mapping,
 
 from . import _args as A
 from . import _native as N
+from ._retry import DEFAULT_MAX_RETRIES, DEFAULT_MAX_RETRY_WAIT, DEFAULT_RETRY_BASE_DELAY, DEFAULT_RETRY_MAX_DELAY, RetryPolicy
 from ._timeouts import DEFAULT_IDLE_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT
 if TYPE_CHECKING:  # _api imports stream, which imports this module: loaded on first use instead
     from ._api import ApiTransport
@@ -394,6 +395,10 @@ class Base:
         e2e_keys: Optional[Mapping[str, str]] = None,
         response_timeout: Optional[float] = DEFAULT_RESPONSE_TIMEOUT,
         idle_timeout: Optional[float] = DEFAULT_IDLE_TIMEOUT,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
+        retry_max_delay: float = DEFAULT_RETRY_MAX_DELAY,
+        max_retry_wait: float = DEFAULT_MAX_RETRY_WAIT,
     ) -> None:
         self._api: "Optional[ApiTransport]" = None
         if transport is None:
@@ -409,9 +414,14 @@ class Base:
             if transport == "direct" and set(extra) <= {"desk_token", "base_url", "wake", "e2e", "e2e_keys"}:
                 raise UsageError("desk_token, base_url, wake, e2e and e2e_keys are for the API transport: give api_key too", kind="usage")
             raise UsageError("%s %s not for the %s transport" % (", ".join(extra), "is" if len(extra) == 1 else "are", transport), kind="usage")
-        if transport == "direct" and (response_timeout != DEFAULT_RESPONSE_TIMEOUT or idle_timeout != DEFAULT_IDLE_TIMEOUT):
-            raise UsageError("response_timeout and idle_timeout are for the api, local and lan transports", kind="usage")
-        timeouts = dict(response_timeout=response_timeout, idle_timeout=idle_timeout)
+        http_opts = ((response_timeout, DEFAULT_RESPONSE_TIMEOUT), (idle_timeout, DEFAULT_IDLE_TIMEOUT), (max_retries, DEFAULT_MAX_RETRIES),
+                     (retry_base_delay, DEFAULT_RETRY_BASE_DELAY), (retry_max_delay, DEFAULT_RETRY_MAX_DELAY), (max_retry_wait, DEFAULT_MAX_RETRY_WAIT))
+        if transport == "direct" and any(v is not d and v != d for v, d in http_opts):
+            raise UsageError("response_timeout, idle_timeout, max_retries, retry_base_delay, retry_max_delay and max_retry_wait "
+                             "are for the api, local and lan transports", kind="usage")
+        timeouts: Dict[str, Any] = dict(response_timeout=response_timeout, idle_timeout=idle_timeout)
+        if transport != "direct":
+            timeouts["retry"] = RetryPolicy(max_retries, retry_base_delay, retry_max_delay, max_retry_wait)
         if transport != "direct" and (backend is not None or cli is not None or native is not None):
             what = "api_key" if transport == "api" and api_key is not None else "transport=%r" % transport
             raise UsageError("%s selects the %s transport; it cannot be combined with backend, cli or native" % (what, transport), kind="usage")

@@ -20,6 +20,7 @@ from .aio import AsyncForward, AsyncGaiaDesk
 from .client import Forward, GaiaDesk
 from ._api import API_FILE_LIMIT, DEFAULT_API_URL, ApiStream, AsyncApiStream
 from ._core import TRANSPORTS, Completed, locate_cli
+from ._retry import DEFAULT_MAX_RETRIES, DEFAULT_MAX_RETRY_WAIT, DEFAULT_RETRY_BASE_DELAY, DEFAULT_RETRY_MAX_DELAY
 from ._timeouts import DEFAULT_IDLE_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT
 from ._local import (
     FingerprintMismatchError,
@@ -66,6 +67,10 @@ __all__ = [
     "API_FILE_LIMIT",
     "DEFAULT_RESPONSE_TIMEOUT",
     "DEFAULT_IDLE_TIMEOUT",
+    "DEFAULT_MAX_RETRIES",
+    "DEFAULT_RETRY_BASE_DELAY",
+    "DEFAULT_RETRY_MAX_DELAY",
+    "DEFAULT_MAX_RETRY_WAIT",
     "TRANSPORTS",
     "normalize_fingerprint",
     "certificate_fingerprint",

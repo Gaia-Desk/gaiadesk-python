@@ -126,6 +126,17 @@ class GaiaDesk(Base):
       download, an event stream; default 90: streams and held waits keep alive every 15 s).
       Exceeded: ``ConnectionLostError``, kind ``timeout``; a stream ends with that error.
 
+    Retries (the same transports): a request is sent again only when that cannot run
+    anything twice: the connection was never made (any method); it was lost after sending,
+    or the answer was 502/503/504 (GETs only); 429 or 409 ``idempotency_key_in_flight``
+    (any method). Never a timeout, nor once an answer has begun.
+
+    * ``max_retries`` (default 2: three attempts in all; 0: off).
+    * ``retry_base_delay`` / ``retry_max_delay``: backoff from 0.25 s doubling up to 8 s,
+      times a random 0.5-1.0.
+    * ``max_retry_wait``: the longest ``Retry-After`` (429, 503) waited for (default 60 s);
+      a longer one is raised at once, in the error's ``retry_after``.
+
     The same operations, results and errors, served by a desk itself (``transport=``):
 
     * ``transport="local"``: code on the desk talks to its own GaiaDesk over the Unix

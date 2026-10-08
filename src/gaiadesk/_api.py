@@ -29,6 +29,7 @@ from urllib.parse import quote, urlencode, urlsplit
 
 from . import _args as A
 from . import _api_e2e as E
+from . import _retry as R
 from . import _timeouts as T
 from ._api_stream import ApiStream, AsyncApiStream, SseEvent, SseParser, connecting, desk_op_exit, network_error  # noqa: F401 (re-exported)
 from ._native_args import mem_mb
@@ -137,10 +138,13 @@ class ApiTransport:
     """Seconds one read of an answer's body may wait (None: no limit)."""
     where = "the GaiaDesk API"
     """Who answers, in a timeout's message."""
+    retry: R.RetryPolicy = R.RetryPolicy()
+    """When a request is sent again (``_retry``)."""
 
     def __init__(self, api_key: str, desk_token: Optional[str] = None, base_url: Optional[str] = None, wake: Optional[int] = None,
                  e2e: str = "auto", e2e_keys: Optional[Mapping[str, str]] = None,
-                 response_timeout: Optional[float] = T.DEFAULT_RESPONSE_TIMEOUT, idle_timeout: Optional[float] = T.DEFAULT_IDLE_TIMEOUT) -> None:
+                 response_timeout: Optional[float] = T.DEFAULT_RESPONSE_TIMEOUT, idle_timeout: Optional[float] = T.DEFAULT_IDLE_TIMEOUT,
+                 retry: Optional[R.RetryPolicy] = None) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
             raise UsageError("api_key must be a non-empty string", kind="usage")
         self._desk_token = check_desk_token(desk_token)
@@ -150,6 +154,7 @@ class ApiTransport:
         self._key = api_key.strip()
         self._wake = wake
         self.set_timeouts(response_timeout, idle_timeout)
+        self.retry = retry or R.RetryPolicy()
         mode, pinned = E.check_options(e2e, e2e_keys)
         self._e2e = E.E2e(self, mode, pinned)
 
@@ -198,9 +203,11 @@ class ApiTransport:
     def open(self, method: str, path: str, *, query: Optional[Dict[str, Any]] = None, json: Any = None, body: Any = None,
              length: Optional[int] = None, accept: str = "application/json", headers: Optional[Mapping[str, str]] = None,
              content_type: str = "application/octet-stream", seal: Any = None,
-             wake: bool = True) -> Tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+             wake: bool = True, retry: bool = True) -> Tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
         """Send one request; an HTTP failure is raised as the typed error from its envelope (a sealed
-        operation's, ``seal``, with the desk's error opened into it). ``wake``: send ``wake_s``."""
+        operation's, ``seal``, with the desk's error opened into it). ``wake``: send ``wake_s``.
+        ``retry``: sent again where the retry policy allows (``_retry``); else once, its error
+        marked for a caller that retries (a sealed operation is sealed afresh for each attempt)."""
         op = "%s %s" % (method, path)
         q = {k: v for k, v in (query or {}).items() if v is not None}
         if self._wake is not None and wake:
@@ -218,11 +225,30 @@ class ApiTransport:
             payload = body
             if length is not None:
                 h["Content-Length"] = str(length)
+        if not retry:
+            return self._attempt(method, url, payload, h, op, seal)
+        start = payload.tell() if hasattr(payload, "seek") and hasattr(payload, "tell") else None
+
+        def rewind() -> bool:
+            if start is not None:
+                try:
+                    payload.seek(start)
+                except (OSError, ValueError):
+                    return False
+                return True
+            return payload is None or isinstance(payload, (bytes, bytearray))
+
+        return self.retry.run(method, lambda: self._attempt(method, url, payload, h, op, seal), rewind)
+
+    def _attempt(self, method: str, url: str, payload: Any, h: Dict[str, str], op: str,
+                 seal: Any) -> Tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
         conn = self._connection()
         watch = T.ResponseWatch(conn, self.response_timeout)
+        connected = False
         try:
             conn.connect()
             watch.check()
+            connected = True
             sock = conn.sock
             connecting(conn)  # a stream being started can now be stopped (kill)
             if sock is not None and self.response_timeout is not None:
@@ -239,8 +265,10 @@ class ApiTransport:
             watch.done_quietly()
             conn.close()
             if watch.fired or T.is_timeout(e):
-                raise T.response_timed_out(self.where, op, self.response_timeout) from e
-            raise self._network_error(e, op) from e
+                raise R.mark(T.response_timed_out(self.where, op, self.response_timeout), None) from e
+            # Never connected: nothing was sent (unless the certificate was refused, which stays so).
+            when = R.GET if connected else (None if isinstance(e, ssl.SSLCertVerificationError) else R.ANY)
+            raise R.mark(self._network_error(e, op), when) from e
         except BaseException:
             watch.done_quietly()
             conn.close()
@@ -254,7 +282,7 @@ class ApiTransport:
                 conn.close()
             if seal is not None:
                 data = E.unseal_error_body(data, seal, op, resp.status)
-            raise api_error(resp.status, data, resp.headers, op)
+            raise R.for_status(api_error(resp.status, data, resp.headers, op))
         return conn, resp
 
     def call(self, method: str, path: str, **kw: Any) -> Any:
