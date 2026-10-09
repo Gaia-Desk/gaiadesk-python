@@ -1,9 +1,17 @@
 # GaiaDesk SDK for Python
 
-Drive your GaiaDesk machines ("desks") from Python: list them and check
-that they are reachable, run commands and get exit codes back, stream
-output, copy files, run background jobs, read stats, mint and revoke scoped
-agent tokens, forward ports, and reach the screen tools through MCP.
+[![CI](https://github.com/Gaia-Desk/gaiadesk-python/actions/workflows/ci.yml/badge.svg)](https://github.com/Gaia-Desk/gaiadesk-python/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/Gaia-Desk/gaiadesk-python)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/Gaia-Desk/gaiadesk-python)](https://github.com/Gaia-Desk/gaiadesk-python/releases/latest)
+
+The official Python SDK for [GaiaDesk](https://gaiadesk.net) remote desktop:
+a typed client library (sync and asyncio) for remote access automation from
+scripts, CI and AI agents. Drive your GaiaDesk machines ("desks") from
+Python: list them and check that they are reachable, run commands on remote
+computers and get exit codes back, stream output, transfer files, run
+background jobs, read stats, mint and revoke scoped agent tokens, forward
+ports, and reach the screen tools through MCP. It works through GaiaDesk's
+native client library, `gaiadesk-cli`, or the hosted GaiaDesk Platform API.
 
 - Package: `gaiadesk` (Python 3.9+, sync and asyncio, typed: ships `py.typed`)
 - Dependencies: none from Python 3.11 (`typing_extensions` before, for the
@@ -13,7 +21,8 @@ agent tokens, forward ports, and reach the screen tools through MCP.
 
 **How it works.** Two backends, one API:
 
-- **Native** (`pip install gaiadesk[native]`): GaiaDesk's client library as
+- **Native** (`pip install gaiadesk[native]`, once `gaiadesk-native` is on
+  PyPI): GaiaDesk's client library as
   a prebuilt extension, `gaiadesk-native` (abi3 wheels for macOS, Linux
   x86_64/aarch64 glibc and Windows). Nothing else to install.
 - **CLI** (otherwise): the SDK runs the `gaiadesk-cli` that ships with the
@@ -27,7 +36,7 @@ GaiaDesk code; GaiaDesk itself is closed-source, and `gaiadesk-native` ships
 under its own licence (see [Backends](#backends)). Where the CLI has no JSON
 output, the SDK says so instead of guessing (see [Known gaps](#known-gaps)).
 
-Other GaiaDesk developer tools:
+Other GaiaDesk developer tools (all of them under [Links](#links)):
 
 - **TypeScript SDK**: [Gaia-Desk/gaiadesk-typescript](https://github.com/Gaia-Desk/gaiadesk-typescript) (`npm install @gaiadesk/sdk`)
 - **MCP server** for AI assistants: [Gaia-Desk/gaiadesk-mcp](https://github.com/Gaia-Desk/gaiadesk-mcp) (`npx -y @gaiadesk/mcp`)
@@ -50,10 +59,24 @@ MIT-licensed. GaiaDesk itself is proprietary and not covered by this license.
 - [Examples](#examples)
 - [Known gaps](#known-gaps)
 - [Development](#development)
+- [Links](#links)
 
 ---
 
 ## Install
+
+The package is not on PyPI yet. Install it from GitHub at a release tag:
+
+```sh
+pip install "git+https://github.com/Gaia-Desk/gaiadesk-python@v0.1.2"
+pip install "gaiadesk[e2e] @ git+https://github.com/Gaia-Desk/gaiadesk-python@v0.1.2"   # with end-to-end encryption
+```
+
+Installed this way the SDK uses `gaiadesk-cli` (below), or the hosted API
+when you give it an `api_key`. The `native` extra does not install from
+GitHub: it needs `gaiadesk-native`, which is not on PyPI yet either.
+
+Once published to PyPI:
 
 ```sh
 pip install "gaiadesk[native]"
@@ -227,8 +250,10 @@ available over the API transport; use the CLI or native transport"):
 ### End-to-end encryption
 
 ```sh
-pip install "gaiadesk[e2e]"    # adds cryptography (Apache-2.0 / BSD)
+pip install "gaiadesk[e2e] @ git+https://github.com/Gaia-Desk/gaiadesk-python@v0.1.2"   # adds cryptography (Apache-2.0 / BSD)
 ```
+
+(`pip install "gaiadesk[e2e]"` once the package is on PyPI.)
 
 With the `e2e` extra installed, desk operations over the API are **sealed**
 so the server relays only ciphertext: it never sees the command, its
@@ -627,6 +652,23 @@ behavioural cases against the CLI and the API transport.
 `scripts/gen-sdk-types.mts` from the CLI's schema
 (`gaiadesk-cli schema --json`); do not edit it. CI runs on Linux, macOS and Windows with Python
 3.9 to 3.13 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+
+## Links
+
+- Package: `gaiadesk` (and `gaiadesk-native`) on PyPI once published; until
+  then, install from this repository's [release tags](https://github.com/Gaia-Desk/gaiadesk-python/tags)
+- Documentation: [Getting started](https://gaiadesk.net/docs/getting-started),
+  [The CLI for scripts and AI agents](https://gaiadesk.net/docs/cli-for-agents),
+  [Agent access](https://gaiadesk.net/docs/agent-access),
+  [Security](https://gaiadesk.net/docs/security)
+- GaiaDesk SDKs: [TypeScript](https://github.com/Gaia-Desk/gaiadesk-typescript), Python (this one),
+  [Go](https://github.com/Gaia-Desk/gaiadesk-go), [Java and Kotlin](https://github.com/Gaia-Desk/gaiadesk-java),
+  [.NET](https://github.com/Gaia-Desk/gaiadesk-dotnet), [Ruby](https://github.com/Gaia-Desk/gaiadesk-ruby),
+  [PHP](https://github.com/Gaia-Desk/gaiadesk-php), [Rust](https://github.com/Gaia-Desk/gaiadesk-rust);
+  the [MCP server](https://github.com/Gaia-Desk/gaiadesk-mcp) for AI assistants; the
+  [command line](https://github.com/Gaia-Desk/gaiadesk-cli), `gaiadesk-cli`
+- [Changelog](CHANGELOG.md) and [releases](https://github.com/Gaia-Desk/gaiadesk-python/releases)
+- [Security policy](https://github.com/Gaia-Desk/gaiadesk-python/security/policy)
 
 ## License
 
